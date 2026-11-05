@@ -1,12 +1,12 @@
-# durable-agent-runtime
+# durably
 
-**Crash-safe AI agents on plain Postgres.**
+**Durable execution for AI agents, with just Postgres.**
 
-> **Status: alpha (0.x), an educational implementation.**
-> Built to show how durable execution works, and small enough to read in an afternoon.
->
-> ✅ Good for: learning, side projects, internal tools, prototypes
-> ❌ Not for: mission-critical production. Use Temporal, Inngest or Restate.
+Your agent crashes after a paid LLM call. durably resumes it on another worker
+without repeating the call — and without running a separate workflow server.
+
+> **Early release (0.x):** the core guarantees are tested; the API may change
+> before 1.0. See the [changelog](CHANGELOG.md).
 
 ## What it is
 
@@ -80,10 +80,33 @@ Side effects run **at least once**, with a stable idempotency key
 (`workflow_id:activity_seq`). Exactly-once is impossible in general, so activities should
 be idempotent.
 
+## When to use durably vs. Temporal
+
+| | durably | Temporal |
+|---|---|---|
+| Infrastructure | The Postgres you already run | A Temporal server cluster (or Temporal Cloud) |
+| Languages | Python | Go, Java, TypeScript, Python, .NET, PHP |
+| Scale | One Postgres; thousands of workflows | Very large fleets, sharded history |
+| Workflow versioning | Detects changed code; `ctx.version` planned | Mature versioning and worker build IDs |
+| Setup | `pip install durably` + `durably init-db` | Deploy and operate a server |
+
+Choose durably when you want crash-safe agents inside an existing Python + Postgres
+backend without another service to run. Choose Temporal when you need multi-language
+workflows or scale beyond a single database.
+
+## Known limitations
+
+- Activities in one workflow run one at a time; parallel activities (`asyncio.gather`)
+  are planned.
+- Timers, signals, heartbeats, `ctx.now()`/`ctx.random()` and Continue-As-New are in
+  progress.
+- No schema migrations yet: upgrading between 0.x releases may require re-creating tables.
+- Side effects are at-least-once; make activities idempotent with the key provided.
+
 ## Stack
 
-Python 3.12, asyncio, asyncpg, PostgreSQL 16 (the only stateful dependency), pytest,
-Hypothesis, Toxiproxy, Docker Compose. No Temporal, Celery or queue library.
+Python 3.12+, asyncio and asyncpg (the only runtime dependency), PostgreSQL 16. Tests use
+pytest, Hypothesis, Toxiproxy and Docker Compose.
 
 ## Development
 
@@ -112,17 +135,19 @@ durably init-db --database-url postgres://user:pass@host:5432/db
 | [0005](docs/adr/0005-claim-reclaims-expired-leases.md) | Claim reclaims expired leases directly |
 | [0006](docs/adr/0006-activities-fenced-by-attempt.md) | Activity tasks are fenced by attempt, not epoch |
 | [0007](docs/adr/0007-suspend-by-unwinding.md) | A workflow task replays until it blocks, then unwinds |
+| [0008](docs/adr/0008-positioning-as-a-library.md) | durably is a library for real use, not an educational demo |
 
 ## Roadmap
 
-See [PLAN.md](PLAN.md) for the phase-by-phase build plan.
+Product requirements are in [docs/prd.md](docs/prd.md); the build order is in [PLAN.md](PLAN.md).
 
-1. Schema, `start`, one worker running two activities in order
-2. Replay and resume after a crash
-3. Epoch fencing against stale workers
-4. Retries, timeouts, heartbeats, timers, signals
-5. Non-determinism detection, `now()`/`random()` markers, Continue-As-New
-6. Failpoint matrix, Hypothesis model test, benchmark scripts
+- [x] Event history, `start`, workers running activities in order
+- [x] Epoch-fenced claims, activity retries with backoff and jitter, timeouts
+- [ ] Crash-and-resume tests with real worker processes
+- [ ] Heartbeats, durable timers, signals
+- [ ] `now()`/`random()` markers, Continue-As-New, `ctx.version`
+- [ ] Failpoint matrix, Hypothesis model test, benchmark tables
+- [ ] Schema migrations, typed public API, first PyPI release (0.1.0)
 
 ## License
 

@@ -1,4 +1,4 @@
-"""durably: crash-safe AI agents on plain Postgres (educational implementation)."""
+"""durably: durable execution for AI agents, with just Postgres."""
 
 from durably.client import Client
 from durably.context import Context

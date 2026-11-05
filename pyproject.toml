@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "durably"
 version = "0.1.0.dev0"
-description = "Crash-safe AI agents on plain Postgres: a small durable execution engine."
+description = "Durable execution for AI agents, with just Postgres."
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
