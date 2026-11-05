@@ -61,7 +61,34 @@ be idempotent.
 Python 3.12, asyncio, asyncpg, PostgreSQL 16 (the only stateful dependency), pytest,
 Hypothesis, Toxiproxy, Docker Compose. No Temporal, Celery or queue library.
 
+## Development
+
+Tests run in a Linux container next to Postgres 16 and Toxiproxy ([ADR 0003](docs/adr/0003-tests-run-in-linux-container.md)).
+You only need Docker.
+
+```bash
+docker compose run --rm --build tests
+```
+
+To create the schema in your own Postgres:
+
+```bash
+pip install -e .
+durably init-db --database-url postgres://user:pass@host:5432/db
+```
+
+## Architecture decisions
+
+| ADR | Decision |
+|---|---|
+| [0001](docs/adr/0001-postgres-only.md) | PostgreSQL is the only stateful dependency |
+| [0002](docs/adr/0002-package-naming.md) | Package, import and CLI are named `durably` |
+| [0003](docs/adr/0003-tests-run-in-linux-container.md) | Tests run in a Linux container |
+| [0004](docs/adr/0004-append-only-enforced-by-trigger.md) | The database enforces append-only history |
+
 ## Roadmap
+
+See [PLAN.md](PLAN.md) for the phase-by-phase build plan.
 
 1. Schema, `start`, one worker running two activities in order
 2. Replay and resume after a crash

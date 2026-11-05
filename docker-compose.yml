@@ -1,0 +1,35 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: durably
+      POSTGRES_PASSWORD: durably
+      POSTGRES_DB: durably
+    ports:
+      - "5433:5432"   # host 5433 avoids clashing with a local Postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U durably"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  # Sits between the app and Postgres so tests can reset connections (Phase 6).
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.9.0
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  tests:
+    build: .
+    environment:
+      DATABASE_URL: postgres://durably:durably@postgres:5432/durably
+      TOXIPROXY_URL: http://toxiproxy:8474
+    volumes:
+      - ./src:/app/src
+      - ./tests:/app/tests
+    depends_on:
+      postgres:
+        condition: service_healthy
+      toxiproxy:
+        condition: service_started

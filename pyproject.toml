@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "durably"
+version = "0.1.0.dev0"
+description = "Crash-safe AI agents on plain Postgres: a small durable execution engine."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+dependencies = ["asyncpg>=0.30"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Python :: 3.12",
+    "Framework :: AsyncIO",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "hypothesis>=6.112"]
+
+[project.scripts]
+durably = "durably.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/durably"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
