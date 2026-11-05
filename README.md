@@ -110,8 +110,8 @@ pytest, Hypothesis, Toxiproxy and Docker Compose.
 
 ## Development
 
-Tests run in a Linux container next to Postgres 16 and Toxiproxy ([ADR 0003](docs/adr/0003-tests-run-in-linux-container.md)).
-You only need Docker.
+Tests run in a Linux container next to Postgres 16 and Toxiproxy, so they behave the same
+on every machine (crash tests rely on POSIX signals). You only need Docker.
 
 ```bash
 docker compose run --rm --build tests
@@ -123,31 +123,6 @@ To create the schema in your own Postgres:
 pip install -e .
 durably init-db --database-url postgres://user:pass@host:5432/db
 ```
-
-## Architecture decisions
-
-| ADR | Decision |
-|---|---|
-| [0001](docs/adr/0001-postgres-only.md) | PostgreSQL is the only stateful dependency |
-| [0002](docs/adr/0002-package-naming.md) | Package, import and CLI are named `durably` |
-| [0003](docs/adr/0003-tests-run-in-linux-container.md) | Tests run in a Linux container |
-| [0004](docs/adr/0004-append-only-enforced-by-trigger.md) | The database enforces append-only history |
-| [0005](docs/adr/0005-claim-reclaims-expired-leases.md) | Claim reclaims expired leases directly |
-| [0006](docs/adr/0006-activities-fenced-by-attempt.md) | Activity tasks are fenced by attempt, not epoch |
-| [0007](docs/adr/0007-suspend-by-unwinding.md) | A workflow task replays until it blocks, then unwinds |
-| [0008](docs/adr/0008-positioning-as-a-library.md) | durably is a library for real use, not an educational demo |
-
-## Roadmap
-
-Product requirements are in [docs/prd.md](docs/prd.md); the build order is in [PLAN.md](PLAN.md).
-
-- [x] Event history, `start`, workers running activities in order
-- [x] Epoch-fenced claims, activity retries with backoff and jitter, timeouts
-- [ ] Crash-and-resume tests with real worker processes
-- [ ] Heartbeats, durable timers, signals
-- [ ] `now()`/`random()` markers, Continue-As-New, `ctx.version`
-- [ ] Failpoint matrix, Hypothesis model test, benchmark tables
-- [ ] Schema migrations, typed public API, first PyPI release (0.1.0)
 
 ## License
 

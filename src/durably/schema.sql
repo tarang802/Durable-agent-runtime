@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS workflows (
     lease_until     timestamptz,
     -- Next history sequence number, handed out by the append transaction.
     next_seq        bigint      NOT NULL DEFAULT 1,
-    -- A duplicate start with the same key returns the existing workflow (FR-1).
+    -- A duplicate start with the same key returns the existing workflow.
     idempotency_key text        UNIQUE,
     result          jsonb,
     error           text,
@@ -62,7 +62,7 @@ CREATE TABLE IF NOT EXISTS tasks (
 CREATE INDEX IF NOT EXISTS tasks_due ON tasks (kind, visible_at);
 
 -- At most one unclaimed workflow task per workflow: every new event "wakes" the
--- workflow with INSERT ... ON CONFLICT DO NOTHING, so wake-ups coalesce (ADR 0007).
+-- workflow with INSERT ... ON CONFLICT DO NOTHING, so wake-ups coalesce.
 CREATE UNIQUE INDEX IF NOT EXISTS tasks_one_pending_workflow_task
     ON tasks (workflow_id) WHERE kind = 'workflow_task' AND claimed_by IS NULL;
 

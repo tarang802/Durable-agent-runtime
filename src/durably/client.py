@@ -29,8 +29,8 @@ class Client:
     async def start(self, workflow: Callable | str, input: Any = None, idempotency_key: str | None = None) -> str:
         """Start a workflow and return its id.
 
-        FR-1: a second start with the same idempotency key returns the existing
-        workflow's id and starts nothing, even if `input` differs.
+        A second start with the same idempotency key returns the existing workflow's
+        id and starts nothing, even if `input` differs.
         """
         async with self.pool.acquire() as conn, conn.transaction():
             wf_id = await conn.fetchval(

@@ -13,7 +13,7 @@ services:
       timeout: 3s
       retries: 20
 
-  # Sits between the app and Postgres so tests can reset connections (Phase 6).
+  # Sits between the app and Postgres so tests can reset connections.
   toxiproxy:
     image: ghcr.io/shopify/toxiproxy:2.9.0
     depends_on:

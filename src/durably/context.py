@@ -8,7 +8,7 @@ A workflow task reruns the workflow function from the top against its history. E
 - history is exhausted: this is a new command; record it and suspend.
 
 Suspending raises `_Suspend`, which unwinds the function. Nothing stays parked in memory:
-the next event wakes a fresh replay (ADR 0007).
+the next event wakes a fresh replay.
 """
 
 import json

@@ -92,7 +92,7 @@ class WorkflowWorker(_Worker):
             case Suspended(command=cmd):
                 seq = await store.append(conn, wf_id, epoch, cmd.type, cmd.payload)
                 # Stable idempotency key: the seq of the ActivityScheduled event never
-                # changes, however many times the activity is retried (FR-8).
+                # changes, however many times the activity is retried.
                 await store.enqueue_activity(conn, wf_id, {
                     **cmd.payload, "scheduled_seq": seq, "idempotency_key": f"{wf_id}:{seq}",
                 })
@@ -103,7 +103,7 @@ class WorkflowWorker(_Worker):
                 await store.append(conn, wf_id, epoch, "WorkflowFailed", {"error": error})
                 await conn.execute("UPDATE workflows SET status = 'failed', error = $2 WHERE id = $1", wf_id, error)
             case NonDeterministic(error=error):
-                # Rule 3: no event is written, so history stays exactly as it was. The
+                # No event is written, so history stays exactly as it was. The
                 # workflow keeps running and retries once someone fixes the code.
                 log.error("%s: workflow %s: %s", self.id, wf_id, error)
                 await conn.execute("UPDATE workflows SET error = $2 WHERE id = $1", wf_id, f"NonDeterminismError: {error}")

@@ -29,11 +29,12 @@ class Event:
 
 
 async def claim_workflow_task(conn: asyncpg.Connection, worker_id: str, lease_s: float) -> Claim | None:
-    """Rule 1: claim a due workflow task and take the workflow's lease, in one transaction.
+    """Claim a due workflow task and take the workflow's lease, in one transaction.
 
-    A task is due if it is unclaimed or its lease expired (a crashed worker's task is
-    reclaimed here; ADR 0005). The workflow must not be leased by a live worker, so one
-    worker replays a workflow at a time. Bumping `epoch` fences out whoever held it before.
+    A task is due if it is unclaimed or its lease expired, so a crashed worker's task is
+    reclaimed here without a separate reaper. The workflow must not be leased by a live
+    worker, so one worker replays a workflow at a time. Bumping `epoch` fences out whoever
+    held it before.
     """
     async with conn.transaction():
         row = await conn.fetchrow(
@@ -69,7 +70,11 @@ async def claim_workflow_task(conn: asyncpg.Connection, worker_id: str, lease_s:
 
 
 async def claim_activity_task(conn: asyncpg.Connection, worker_id: str, lease_s: float) -> Claim | None:
-    """Claim a due activity task. Does not touch the workflow's epoch (ADR 0006)."""
+    """Claim a due activity task.
+
+    Does not touch the workflow's epoch: that would fence out the workflow worker. Activity
+    results are guarded by the task's attempt instead (see `record_activity_result`).
+    """
     row = await conn.fetchrow(
         """
         WITH due AS (
@@ -101,7 +106,7 @@ async def load_history(conn: asyncpg.Connection, workflow_id: UUID) -> list[Even
 
 
 async def append(conn: asyncpg.Connection, workflow_id: UUID, epoch: int, type: str, payload: dict) -> int:
-    """Rule 2: append one event, fenced by epoch. Returns the event's seq.
+    """Append one event, fenced by epoch. Returns the event's seq.
 
     The epoch check is part of the write itself, not a read before it: a worker that
     paused after any earlier check still matches zero rows here (G2). Taking the next
@@ -156,7 +161,7 @@ async def release_workflow(conn: asyncpg.Connection, claim: Claim, worker_id: st
 async def record_activity_result(
     conn: asyncpg.Connection, claim: Claim, worker_id: str, type: str, payload: dict
 ) -> bool:
-    """Rule 4: record an activity's outcome only if this claim still owns the task.
+    """Record an activity's outcome only if this claim still owns the task.
 
     Deleting the task with `attempt` and `claimed_by` in the WHERE clause is the guard: if
     the lease expired and another worker re-claimed the task, attempt moved on and this
