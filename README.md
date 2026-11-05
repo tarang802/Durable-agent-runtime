@@ -22,23 +22,47 @@ then sends an email. The worker is killed after the summary. A naive restart rep
 paid call and may send the email twice. With `durably`, the restart skips everything
 recorded and sends the email once.
 
-## What it will look like
+## Usage
+
+Activities do the real work. Each one receives a stable `idempotency_key`
+(`workflow_id:activity_seq`) to pass to the provider:
 
 ```python
 import durably
 
+@durably.activity("llm")
+async def llm(prompt, *, idempotency_key):
+    return await my_llm_client.complete(prompt, idempotency_key=idempotency_key)
+
+@durably.activity("send_email")
+async def send_email(to, body, *, idempotency_key):
+    await my_email_client.send(to, body, idempotency_key=idempotency_key)
+```
+
+A workflow is plain async code that calls activities through `ctx`:
+
+```python
 @durably.workflow("research_agent")
 async def research_agent(ctx, input):
     plan = await ctx.activity("llm", [f"Plan research on {input['topic']}"])
-    results = [await ctx.activity("search", [q]) for q in plan.splitlines()[:3]]
-    summary = await ctx.activity("llm", [f"Summarize: {results}"])
+    summary = await ctx.activity("llm", [f"Summarize: {plan}"], retry={"max_attempts": 5}, timeout=60)
     await ctx.activity("send_email", [input["email"], summary])
     return {"summary": summary}
 ```
 
+Run workers, then start workflows from your app:
+
 ```bash
+durably init-db
 durably worker --kind workflow --module my_app.workflows
 durably worker --kind activity --module my_app.activities
+```
+
+```python
+client = await durably.Client.connect()
+wf_id = await client.start(research_agent, {"topic": "durable execution", "email": "me@example.com"},
+                           idempotency_key="research:42")
+print(await client.result(wf_id, timeout=300))
 ```
 
 ## Guarantees (planned, one test each)
@@ -85,6 +109,9 @@ durably init-db --database-url postgres://user:pass@host:5432/db
 | [0002](docs/adr/0002-package-naming.md) | Package, import and CLI are named `durably` |
 | [0003](docs/adr/0003-tests-run-in-linux-container.md) | Tests run in a Linux container |
 | [0004](docs/adr/0004-append-only-enforced-by-trigger.md) | The database enforces append-only history |
+| [0005](docs/adr/0005-claim-reclaims-expired-leases.md) | Claim reclaims expired leases directly |
+| [0006](docs/adr/0006-activities-fenced-by-attempt.md) | Activity tasks are fenced by attempt, not epoch |
+| [0007](docs/adr/0007-suspend-by-unwinding.md) | A workflow task replays until it blocks, then unwinds |
 
 ## Roadmap
 

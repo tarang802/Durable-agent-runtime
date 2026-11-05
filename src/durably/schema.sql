@@ -3,7 +3,7 @@
 CREATE TABLE IF NOT EXISTS workflows (
     id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     type            text        NOT NULL,
-    input           jsonb       NOT NULL DEFAULT '{}'::jsonb,
+    input           jsonb,      -- NULL when started without input
     status          text        NOT NULL DEFAULT 'running'
                     CHECK (status IN ('running', 'completed', 'failed', 'cancelled')),
     -- Fencing token: bumped on every workflow-task claim. Every history write is
@@ -60,3 +60,12 @@ CREATE TABLE IF NOT EXISTS tasks (
 
 -- Claim scans due tasks of one kind in visibility order.
 CREATE INDEX IF NOT EXISTS tasks_due ON tasks (kind, visible_at);
+
+-- At most one unclaimed workflow task per workflow: every new event "wakes" the
+-- workflow with INSERT ... ON CONFLICT DO NOTHING, so wake-ups coalesce (ADR 0007).
+CREATE UNIQUE INDEX IF NOT EXISTS tasks_one_pending_workflow_task
+    ON tasks (workflow_id) WHERE kind = 'workflow_task' AND claimed_by IS NULL;
+
+-- G4: at most one terminal event per workflow, enforced by the database.
+CREATE UNIQUE INDEX IF NOT EXISTS events_one_terminal
+    ON events (workflow_id) WHERE type IN ('WorkflowCompleted', 'WorkflowFailed');
