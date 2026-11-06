@@ -89,3 +89,14 @@ async def test_timer_fires_once_after_crash_while_firing(client, spawn, shared_l
 
     assert await client.result(wf, timeout=20) == f"llm(after nap {TOPIC})"
     assert [e.type for e in await client.history(wf)].count("TimerFired") == 1  # G7
+
+
+async def test_failpoint_can_wait_for_the_nth_hit(client, spawn, shared_llm):
+    wf = await client.start("research", TOPIC)
+    await spawn("workflow")
+    crashing = await spawn("activity", failpoint="after_record_before_ack@2")
+
+    # Dies after recording the second (last) activity, not the first.
+    assert await crashing.exit_code() == EXIT_CODE
+    assert await client.result(wf, timeout=20) == expected_result(TOPIC)
+    assert (await shared_llm.stats()).effects_by_prompt == {step: 1 for step in STEPS}
