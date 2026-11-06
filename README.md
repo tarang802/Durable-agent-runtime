@@ -29,7 +29,7 @@ recorded and sends the email once.
 Requires Python 3.12+ and PostgreSQL. CI tests against PostgreSQL 16.
 
 ```bash
-pip install git+https://github.com/tarang802/Durable-agent-runtime
+pip install durably
 ```
 
 Then create durably's tables in your database (safe to run again):

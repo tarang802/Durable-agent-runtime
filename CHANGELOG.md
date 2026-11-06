@@ -7,6 +7,10 @@ or the database schema; such changes and their migration steps are listed here.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-07
+
+First release.
+
 ### Added
 - Workflow engine: workflows replay against an append-only event history in Postgres;
   recorded activity results are returned instead of re-run.
@@ -36,6 +40,8 @@ or the database schema; such changes and their migration steps are listed here.
   carrying over untaken signals. `client.result` and `client.signal` follow the chain;
   `client.runs(id)` lists every run.
 - Workers back off exponentially (up to 2 s) while the database is unreachable.
+- Database calls time out (60 s by default, `durably worker --db-timeout`) instead of
+  waiting forever on a connection that stopped answering.
 - Tests for recovery from dropped database connections (Toxiproxy) and a Hypothesis
   state-machine test against a reference model.
 - `FAILPOINT=<name>@<n>` fires on the n-th hit.
@@ -49,3 +55,6 @@ or the database schema; such changes and their migration steps are listed here.
 ### Fixed
 - A deadlock between delivering an event (activity result, timer, signal) and claiming
   the same workflow's task: all writes now take task locks before workflow locks.
+
+[Unreleased]: https://github.com/tarang802/Durable-agent-runtime/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/tarang802/Durable-agent-runtime/releases/tag/v0.1.0
