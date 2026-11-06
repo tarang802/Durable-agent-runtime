@@ -35,6 +35,9 @@ or the database schema; such changes and their migration steps are listed here.
   `--max-history` events (default 1000); `ctx.continue_as_new(input)` starts a fresh run,
   carrying over untaken signals. `client.result` and `client.signal` follow the chain;
   `client.runs(id)` lists every run.
+- Workers back off exponentially (up to 2 s) while the database is unreachable.
+- Tests for recovery from dropped database connections (Toxiproxy) and a Hypothesis
+  state-machine test against a reference model.
 
 ### Fixed
 - A deadlock between delivering an event (activity result, timer, signal) and claiming

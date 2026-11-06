@@ -204,6 +204,23 @@ Crash tests use failpoints: `FAILPOINT=<name>` makes a worker exit abruptly at t
 and `FAILPOINT=<name>:pause` freezes it with SIGSTOP. You can use them to crash-test your
 own workflows the same way.
 
+What the suite covers:
+
+- **Crash recovery** with real worker processes killed or frozen at each failpoint.
+- **Dropped connections:** Toxiproxy cuts the workers' Postgres connections mid-activity;
+  they back off, reconnect and finish without billing a step twice.
+- **Model-based testing:** a Hypothesis state machine runs random interleavings of
+  starts, signals, worker steps and crashes, and checks history against a reference model
+  after every step.
+
+When the model test fails it prints the minimal failing steps and a
+`@reproduce_failure(...)` line to paste above the test. To rerun a whole session
+deterministically, pass a seed (more examples with `DURABLY_MODEL_EXAMPLES`):
+
+```bash
+docker compose run --rm tests pytest tests/test_model.py --hypothesis-seed=12345
+```
+
 To create the schema in your own Postgres:
 
 ```bash
