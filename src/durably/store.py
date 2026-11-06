@@ -2,6 +2,10 @@
 
 All lease times use the database clock (`now()`), never a worker's clock. Callers that
 combine several of these functions must wrap them in one transaction.
+
+Lock order: a transaction that locks both a `tasks` row (or index entry) and a
+`workflows` row takes the tasks lock first. Every function here follows it; mixing the
+order deadlocks under concurrency.
 """
 
 import os
@@ -163,18 +167,29 @@ async def enqueue_activity(conn: asyncpg.Connection, workflow_id: UUID, payload:
     )
 
 
-async def release_workflow(conn: asyncpg.Connection, claim: Claim, worker_id: str) -> None:
-    """Finish a workflow task: drop it and give up the lease. Fenced like an append."""
+async def take_own_task(conn: asyncpg.Connection, claim: Claim, worker_id: str) -> None:
+    """Start finishing a workflow task by deleting it; the first write of that transaction.
+
+    Taking the task row before any workflows row keeps the lock order (see module doc).
+    It is also an early ownership check: if the lease expired and another worker
+    re-claimed the task, nothing matches and we stop before writing anything.
+    """
+    status = await conn.execute(
+        "DELETE FROM tasks WHERE id = $1 AND claimed_by = $2 AND attempt = $3",
+        claim.task_id, worker_id, claim.attempt,
+    )
+    if status == "DELETE 0" and fencing_enabled():
+        raise StaleWorkerError(f"workflow {claim.workflow_id}: task {claim.task_id} was re-claimed")
+
+
+async def release_workflow(conn: asyncpg.Connection, claim: Claim) -> None:
+    """Give up the workflow's lease at the end of a workflow task. Fenced like an append."""
     status = await conn.execute(
         "UPDATE workflows SET lease_owner = NULL, lease_until = NULL WHERE id = $1 AND (epoch = $2 OR NOT $3)",
         claim.workflow_id, claim.epoch, fencing_enabled(),
     )
     if status == "UPDATE 0":
         raise StaleWorkerError(f"workflow {claim.workflow_id}: epoch {claim.epoch} is stale")
-    await conn.execute(
-        "DELETE FROM tasks WHERE id = $1 AND claimed_by = $2 AND attempt = $3",
-        claim.task_id, worker_id, claim.attempt,
-    )
 
 
 async def record_activity_result(
@@ -205,17 +220,20 @@ async def deliver(conn: asyncpg.Connection, workflow_id: UUID, type: str, payloa
     timer row) decides whether to deliver. The `next_seq` row lock still serializes this
     with any concurrent workflow append. Returns None if the workflow is no longer running.
     """
+    # Lock order: tasks before workflows, the same order as claim_workflow_task. Waking
+    # first touches the tasks index; taking the workflows row lock first would let a
+    # concurrent claim (which holds the task and wants the workflow) deadlock with us.
+    await wake_workflow(conn, workflow_id)
     seq = await conn.fetchval(
         "UPDATE workflows SET next_seq = next_seq + 1 WHERE id = $1 AND status = 'running' RETURNING next_seq - 1",
         workflow_id,
     )
     if seq is None:
-        return None
+        return None  # a stray wake-up for a finished workflow is released harmlessly
     await conn.execute(
         "INSERT INTO events (workflow_id, seq, type, payload) VALUES ($1, $2, $3, $4)",
         workflow_id, seq, type, payload,
     )
-    await wake_workflow(conn, workflow_id)
     return seq
 
 

@@ -97,6 +97,7 @@ class WorkflowWorker(_Worker):
 
     async def _apply(self, conn, claim, outcome) -> None:
         wf_id, epoch = claim.workflow_id, claim.epoch
+        await store.take_own_task(conn, claim, self.id)  # first: tasks before workflows
         match outcome:
             case Suspended(command=None) | None:
                 pass
@@ -120,9 +121,9 @@ class WorkflowWorker(_Worker):
                 # No event is written, so history stays exactly as it was. The
                 # workflow keeps running and retries once someone fixes the code.
                 log.error("%s: workflow %s: %s", self.id, wf_id, error)
+                await store.wake_workflow(conn, wf_id, NONDETERMINISM_RETRY_S)  # tasks before workflows
                 await conn.execute("UPDATE workflows SET error = $2 WHERE id = $1", wf_id, f"NonDeterminismError: {error}")
-                await store.wake_workflow(conn, wf_id, NONDETERMINISM_RETRY_S)
-        await store.release_workflow(conn, claim, self.id)
+        await store.release_workflow(conn, claim)
 
 
 class ActivityWorker(_Worker):

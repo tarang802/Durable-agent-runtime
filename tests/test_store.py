@@ -91,3 +91,26 @@ async def test_second_terminal_event_is_rejected(db):
     await db.execute("INSERT INTO events (workflow_id, seq, type) VALUES ($1, 1, 'WorkflowCompleted')", wf)
     with pytest.raises(asyncpg.UniqueViolationError):
         await db.execute("INSERT INTO events (workflow_id, seq, type) VALUES ($1, 2, 'WorkflowCompleted')", wf)
+
+
+async def test_delivery_takes_locks_in_the_same_order_as_claim(pool, db):
+    """Regression: delivering an event used to lock the workflow row before the task,
+    the opposite of claim, so the two could deadlock."""
+    wf = await new_workflow(db)
+    async with pool.acquire() as claimer, pool.acquire() as deliverer:
+        claim_tx = claimer.transaction()
+        await claim_tx.start()
+        # The claim's first step: take the pending workflow task.
+        await claimer.execute("UPDATE tasks SET claimed_by = 'w1' WHERE workflow_id = $1", wf)
+
+        async def deliver():
+            async with deliverer.transaction():
+                return await store.deliver(deliverer, wf, "SignalReceived", {"name": "s", "payload": 1})
+
+        delivering = asyncio.create_task(deliver())
+        await asyncio.sleep(0.3)  # let delivery block on the task the claim holds
+        # The claim's second step: lock the workflow row. Deadlocks if delivery holds it.
+        await claimer.execute("UPDATE workflows SET epoch = epoch + 1 WHERE id = $1", wf)
+        await claim_tx.commit()
+
+        assert await asyncio.wait_for(delivering, 5) == 1
