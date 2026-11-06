@@ -9,6 +9,7 @@ order deadlocks under concurrency.
 """
 
 import os
+from collections.abc import Sequence
 from dataclasses import dataclass
 from uuid import UUID
 
@@ -118,7 +119,7 @@ async def claim_activity_task(conn: asyncpg.Connection, worker_id: str, lease_s:
 
 async def create_workflow(
     conn: asyncpg.Connection, type: str, input, *, idempotency_key: str | None = None,
-    started: dict | None = None, carried: list[tuple[str, dict]] = (),
+    started: dict | None = None, carried: Sequence[tuple[str, dict]] = (),
 ) -> UUID | None:
     """Insert a workflow with its WorkflowStarted event, then any `carried` events, and wake it.
 
@@ -159,7 +160,7 @@ async def latest_run(conn: asyncpg.Connection, workflow_id) -> asyncpg.Record | 
     )
 
 
-async def load_history(conn: asyncpg.Connection, workflow_id: UUID) -> list[Event]:
+async def load_history(conn: asyncpg.Connection, workflow_id: UUID | str) -> list[Event]:
     rows = await conn.fetch(
         "SELECT seq, type, payload FROM events WHERE workflow_id = $1 ORDER BY seq", workflow_id
     )

@@ -73,19 +73,23 @@ class Context:
         self.new_commands: list[Command] = []
         self.nondeterminism: NonDeterminismError | None = None
 
-    def _command(self, type: str, payload: dict, identity: tuple[str, ...], *, suspend: bool = True) -> Event | None:
+    def _command(self, type: str, payload: dict, identity: tuple[str, ...]) -> Event:
+        """Like `_take`, but a new command suspends the workflow until its result arrives."""
+        recorded = self._take(type, payload, identity)
+        if recorded is None:
+            raise _Suspend()
+        return recorded
+
+    def _take(self, type: str, payload: dict, identity: tuple[str, ...]) -> Event | None:
         """Take the next command position and return the event history recorded there.
 
-        If history is exhausted, record `payload` as a new command and suspend (or, with
-        `suspend=False`, return None and keep running). If history holds a different
-        command (type or `identity` fields differ), the code changed under a running
-        workflow: raise NonDeterminismError (G5).
+        If history is exhausted, record `payload` as a new command and return None. If
+        history holds a different command (type or `identity` fields differ), the code
+        changed under a running workflow: raise NonDeterminismError (G5).
         """
         if self._pos >= len(self._commands):
             self._pos += 1
             self.new_commands.append(Command(type, payload))
-            if suspend:
-                raise _Suspend()
             return None
         recorded = self._commands[self._pos]
         expected = {k: recorded.payload.get(k) for k in identity}
@@ -132,7 +136,7 @@ class Context:
 
     def _marker(self, kind: str, make) -> Any:
         """Return the value recorded for this marker, or record a fresh one from `make()`."""
-        recorded = self._command("MarkerRecorded", {"kind": kind, "value": None}, identity=("kind",), suspend=False)
+        recorded = self._take("MarkerRecorded", {"kind": kind, "value": None}, identity=("kind",))
         if recorded is not None:
             return recorded.payload["value"]
         value = _normalize(make())
@@ -166,8 +170,7 @@ class Context:
             return False
         if self._history_length + len(self.new_commands) < self.max_history:
             return False
-        self._command("MarkerRecorded", {"kind": "continue_as_new_suggested", "value": True},
-                      identity=("kind",), suspend=False)
+        self._take("MarkerRecorded", {"kind": "continue_as_new_suggested", "value": True}, identity=("kind",))
         return True
 
     def continue_as_new(self, input: Any) -> NoReturn:
@@ -207,6 +210,7 @@ class Context:
                 return signal.payload["payload"]
             if timeout is None:
                 raise _Suspend()  # nothing to schedule; the signal itself wakes the workflow
+        assert timeout is not None  # a timer exists only for timed waits
         timer = self._command("TimerStarted", {"seconds": float(timeout), "for_signal": name},
                               identity=("seconds", "for_signal"))
         fired = self._results.get(timer.seq)
@@ -251,6 +255,7 @@ class NonDeterministic:
 
 async def replay(fn, ctx: Context, input: Any) -> Completed | Failed | Suspended | ContinuedAsNew | NonDeterministic:
     """Run the workflow function against history once and report how it stopped."""
+    outcome: Completed | Failed | Suspended | ContinuedAsNew | None
     try:
         result = await fn(ctx, input)
     except _Suspend:

@@ -92,6 +92,7 @@ class WorkflowWorker(_Worker):
             history = await store.load_history(conn, claim.workflow_id)
 
             fn = registry.get_workflow(wf["type"])
+            outcome: Completed | Failed | Suspended | ContinuedAsNew | NonDeterministic | None
             if wf["status"] != "running":
                 outcome = None
             elif fn is None:

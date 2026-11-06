@@ -13,7 +13,7 @@ _activities: dict[str, Callable] = {}
 def _register(table: dict[str, Callable], name: str | Callable | None):
     def decorate(fn: Callable) -> Callable:
         key = name if isinstance(name, str) else fn.__name__
-        fn.__durably_name__ = key
+        setattr(fn, "__durably_name__", key)
         table[key] = fn
         return fn
 
@@ -33,7 +33,7 @@ def activity(name: str | Callable | None = None):
 
 
 def name_of(fn_or_name: Callable | str) -> str:
-    return fn_or_name if isinstance(fn_or_name, str) else fn_or_name.__durably_name__
+    return fn_or_name if isinstance(fn_or_name, str) else getattr(fn_or_name, "__durably_name__")
 
 
 def get_workflow(name: str) -> Callable | None:
