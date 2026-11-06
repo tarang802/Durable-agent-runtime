@@ -40,6 +40,11 @@ or the database schema; such changes and their migration steps are listed here.
   state-machine test against a reference model.
 - `FAILPOINT=<name>@<n>` fires on the n-th hit.
 - Benchmark scripts in `experiments/` (`python -m experiments.run_all`).
+- Runnable research agent example in `examples/research_agent`.
+- Packaging: PyPI metadata, `py.typed` for type checkers, mypy-clean source.
+- CI on GitHub Actions (type check, tests, example, package build; install check on
+  Linux, macOS and Windows with Python 3.12 and 3.13) and a release workflow that
+  publishes to PyPI when a version tag is pushed.
 
 ### Fixed
 - A deadlock between delivering an event (activity result, timer, signal) and claiming
