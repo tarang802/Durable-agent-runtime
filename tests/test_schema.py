@@ -50,3 +50,15 @@ async def test_unknown_event_type_rejected(db):
     wf = await new_workflow(db)
     with pytest.raises(asyncpg.CheckViolationError):
         await db.execute("INSERT INTO events (workflow_id, seq, type) VALUES ($1, 1, 'Bogus')", wf)
+
+
+async def test_database_calls_time_out_instead_of_hanging(db):
+    from durably.db import create_pool
+
+    pool = await create_pool(command_timeout=0.3)
+    try:
+        with pytest.raises(TimeoutError):
+            await pool.fetchval("SELECT pg_sleep(5)")
+        assert await pool.fetchval("SELECT 1") == 1  # the pool recovers
+    finally:
+        await pool.close()

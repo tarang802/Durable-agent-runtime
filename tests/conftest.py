@@ -106,7 +106,7 @@ async def spawn(db):
             env["DURABLY_FENCING"] = "off"
         proc = await asyncio.create_subprocess_exec(
             sys.executable, "-m", "durably.worker", "--kind", kind, "--module", "tests.crash_app",
-            "--lease", str(lease), "--poll", "0.05", env=env,
+            "--lease", str(lease), "--poll", "0.05", "--db-timeout", "5", env=env,
         )
         procs.append(WorkerProcess(proc))
         return procs[-1]
@@ -144,6 +144,17 @@ class PostgresProxy:
         await asyncio.sleep(seconds)
         await self.set_enabled(True)
 
+    async def blackhole(self, seconds: float) -> None:
+        """Silently drop all traffic for `seconds` without closing connections.
+
+        Like a real network partition: queries in flight get no reply and no error.
+        """
+        await asyncio.to_thread(self._call, "POST", "/proxies/postgres/toxics", {
+            "name": "blackhole", "type": "timeout", "stream": "downstream", "attributes": {"timeout": 0},
+        })
+        await asyncio.sleep(seconds)
+        await asyncio.to_thread(self._call, "DELETE", "/proxies/postgres/toxics/blackhole")
+
 
 @pytest.fixture
 async def pg_proxy(db):
@@ -152,6 +163,6 @@ async def pg_proxy(db):
     await asyncio.to_thread(proxy._call, "POST", "/proxies", {
         "name": "postgres", "listen": "0.0.0.0:6432", "upstream": f"{direct.hostname}:{direct.port}", "enabled": True,
     })
-    await proxy.set_enabled(True)
+    await asyncio.to_thread(proxy._call, "POST", "/reset")  # enabled, no toxics
     yield proxy
-    await proxy.set_enabled(True)
+    await asyncio.to_thread(proxy._call, "POST", "/reset")

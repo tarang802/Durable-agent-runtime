@@ -19,7 +19,7 @@ from durably.activity_context import ActivityInfo
 from durably.context import (
     DEFAULT_MAX_HISTORY, Completed, Context, ContinuedAsNew, Failed, NonDeterministic, Suspended, replay,
 )
-from durably.db import create_pool
+from durably.db import DEFAULT_COMMAND_TIMEOUT_S, create_pool
 from durably.errors import StaleWorkerError
 from durably.failpoints import failpoint
 
@@ -213,6 +213,8 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--database-url", default=None, help="defaults to $DATABASE_URL")
     parser.add_argument("--lease", type=float, default=30.0, help="lease length in seconds")
     parser.add_argument("--poll", type=float, default=0.2, help="idle poll interval in seconds")
+    parser.add_argument("--db-timeout", type=float, default=DEFAULT_COMMAND_TIMEOUT_S,
+                        help="seconds before a database call is abandoned and retried")
     parser.add_argument("--max-history", type=int, default=DEFAULT_MAX_HISTORY,
                         help="history length at which ctx.should_continue_as_new() turns True (workflow workers)")
 
@@ -220,7 +222,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 async def serve(args: argparse.Namespace) -> None:
     for module in args.module:
         importlib.import_module(module)
-    pool = await create_pool(args.database_url)
+    pool = await create_pool(args.database_url, command_timeout=args.db_timeout)
     extra = {"max_history": args.max_history} if args.kind == "workflow" else {}
     worker = WORKERS[args.kind](pool, lease=args.lease, poll=args.poll, **extra)
     log.info("%s: started", worker.id)
