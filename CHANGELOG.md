@@ -38,6 +38,8 @@ or the database schema; such changes and their migration steps are listed here.
 - Workers back off exponentially (up to 2 s) while the database is unreachable.
 - Tests for recovery from dropped database connections (Toxiproxy) and a Hypothesis
   state-machine test against a reference model.
+- `FAILPOINT=<name>@<n>` fires on the n-th hit.
+- Benchmark scripts in `experiments/` (`python -m experiments.run_all`).
 
 ### Fixed
 - A deadlock between delivering an event (activity result, timer, signal) and claiming
