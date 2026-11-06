@@ -1,6 +1,7 @@
 """The replay engine on hand-built histories, without a database."""
 
 import uuid
+from datetime import datetime
 
 from durably.context import Command, Completed, Context, NonDeterministic, Suspended, replay
 from durably.store import Event
@@ -17,7 +18,7 @@ async def two_calls(ctx, input):
 async def test_empty_history_schedules_first_activity():
     outcome = await replay(two_calls, Context(WF, []), None)
     assert isinstance(outcome, Suspended)
-    assert outcome.command.payload["name"] == "a"
+    assert outcome.commands[0].payload["name"] == "a"
 
 
 async def test_recorded_results_are_returned_not_rescheduled():
@@ -33,7 +34,7 @@ async def test_recorded_results_are_returned_not_rescheduled():
 
 async def test_pending_activity_suspends_without_new_command():
     history = [Event(2, "ActivityScheduled", {"name": "a", "args": [1]})]
-    assert await replay(two_calls, Context(WF, history), None) == Suspended(None)
+    assert await replay(two_calls, Context(WF, history), None) == Suspended([])
 
 
 async def test_changed_code_is_nondeterminism():
@@ -61,12 +62,12 @@ async def naps(ctx, input):
 
 async def test_sleep_records_a_timer_and_suspends():
     outcome = await replay(naps, Context(WF, []), None)
-    assert outcome == Suspended(Command("TimerStarted", {"seconds": 30.0, "for_signal": None}))
+    assert outcome == Suspended([Command("TimerStarted", {"seconds": 30.0, "for_signal": None})])
 
 
 async def test_sleep_waits_until_the_timer_fires():
     started = [Event(2, "TimerStarted", {"seconds": 30.0})]
-    assert await replay(naps, Context(WF, started), None) == Suspended(None)
+    assert await replay(naps, Context(WF, started), None) == Suspended([])
     fired = started + [Event(3, "TimerFired", {"started_seq": 2})]
     assert await replay(naps, Context(WF, fired), None) == Completed("awake")
 
@@ -90,7 +91,7 @@ async def test_signals_are_taken_in_order_once_each():
 
 
 async def test_wait_without_signal_suspends_without_a_command():
-    assert await replay(waits_twice, Context(WF, [signal(2, "msg", "a")]), None) == Suspended(None)
+    assert await replay(waits_twice, Context(WF, [signal(2, "msg", "a")]), None) == Suspended([])
 
 
 async def timed_then_untimed(ctx, input):
@@ -101,7 +102,7 @@ async def timed_then_untimed(ctx, input):
 
 async def test_timed_wait_starts_a_timer_when_no_signal_yet():
     outcome = await replay(timed_then_untimed, Context(WF, []), None)
-    assert outcome == Suspended(Command("TimerStarted", {"seconds": 5.0, "for_signal": "msg"}))
+    assert outcome == Suspended([Command("TimerStarted", {"seconds": 5.0, "for_signal": "msg"})])
 
 
 async def test_signal_before_the_timer_fires_wins():
@@ -120,3 +121,33 @@ async def test_signal_already_waiting_needs_no_timer():
     # Run 1 saw the signal immediately and started no timer; replays must agree.
     history = [signal(2, "msg", "a"), signal(3, "msg", "b")]
     assert await replay(timed_then_untimed, Context(WF, history), None) == Completed(["a", "b"])
+
+
+async def uses_markers(ctx, input):
+    stamp = ctx.now()
+    roll = ctx.random()
+    ident = ctx.uuid4()
+    await ctx.activity("a", [roll])
+    return [stamp.isoformat(), roll, str(ident)]
+
+
+async def test_markers_are_recorded_without_suspending():
+    outcome = await replay(uses_markers, Context(WF, []), None)
+    assert [c.type for c in outcome.commands] == ["MarkerRecorded"] * 3 + ["ActivityScheduled"]
+    assert [c.payload["kind"] for c in outcome.commands[:3]] == ["now", "random", "uuid4"]
+    assert outcome.commands[3].payload["args"] == [outcome.commands[1].payload["value"]]
+
+
+async def test_markers_replay_their_recorded_values():
+    first = await replay(uses_markers, Context(WF, []), None)
+    history = [Event(i + 2, c.type, c.payload) for i, c in enumerate(first.commands)]
+    history.append(Event(6, "ActivityCompleted", {"scheduled_seq": 5, "result": None}))
+
+    [stamp, roll, ident] = [c.payload["value"] for c in first.commands[:3]]
+    outcome = await replay(uses_markers, Context(WF, history), None)
+    assert outcome == Completed([datetime.fromisoformat(stamp).isoformat(), roll, ident])
+
+
+async def test_changed_marker_kind_is_nondeterminism():
+    history = [Event(2, "MarkerRecorded", {"kind": "random", "value": 0.5})]
+    assert isinstance(await replay(uses_markers, Context(WF, history), None), NonDeterministic)

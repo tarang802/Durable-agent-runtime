@@ -120,3 +120,23 @@ async def test_uncaught_activity_failure_fails_workflow(client, workers):
     with pytest.raises(durably.WorkflowFailedError, match="injected failure"):
         await client.result(wf, timeout=10)
     assert [e.type for e in await client.history(wf)][-1] == "WorkflowFailed"
+
+
+@durably.workflow("stamped")
+async def stamped(ctx, input):
+    before = ctx.now()
+    token = ctx.uuid4()
+    await ctx.activity("record", ["x"])  # forces at least one more replay
+    return {"before": before.isoformat(), "token": str(token), "again": str(ctx.uuid4()) != str(token)}
+
+
+async def test_now_and_uuid_are_stable_across_replays(client, workers):
+    workers()
+    wf = await client.start(stamped)
+    result = await client.result(wf, timeout=10)
+
+    markers = [e.payload for e in await client.history(wf) if e.type == "MarkerRecorded"]
+    assert [m["kind"] for m in markers] == ["now", "uuid4", "uuid4"]
+    assert result["before"] == markers[0]["value"]
+    assert result["token"] == markers[1]["value"]
+    assert result["again"] is True

@@ -5,22 +5,27 @@ A workflow task reruns the workflow function from the top against its history. E
 
 - history has a command there: it must match the call (else NonDeterminismError); if
   its result is recorded, return it without running anything (G3);
-- history is exhausted: this is a new command; record it and suspend.
+- history is exhausted: this is a new command; record it. Commands that need a result
+  (activities, timers) then suspend; markers (`now`, `random`, `uuid4`) do not, so one
+  workflow task can record several new commands.
 
 Suspending raises `_Suspend`, which unwinds the function. Nothing stays parked in memory:
 the next event wakes a fresh replay.
 """
 
 import json
+import random
+import uuid
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
 from durably.errors import ActivityError, NonDeterminismError
 from durably.store import Event
 
-COMMAND_TYPES = {"ActivityScheduled", "TimerStarted"}
+COMMAND_TYPES = {"ActivityScheduled", "TimerStarted", "MarkerRecorded"}
 # Result event type -> payload field naming the command it answers.
 RESULT_TYPES = {"ActivityCompleted": "scheduled_seq", "ActivityFailed": "scheduled_seq", "TimerFired": "started_seq"}
 
@@ -54,20 +59,23 @@ class Context:
                 self._signals[e.payload["name"]].append(e)
         self._signals_taken: Counter[str] = Counter()
         self._pos = 0
-        self.new_command: Command | None = None
+        self.new_commands: list[Command] = []
         self.nondeterminism: NonDeterminismError | None = None
 
-    def _command(self, type: str, payload: dict, identity: tuple[str, ...]) -> Event:
+    def _command(self, type: str, payload: dict, identity: tuple[str, ...], *, suspend: bool = True) -> Event | None:
         """Take the next command position and return the event history recorded there.
 
-        If history is exhausted, record `payload` as a new command and suspend. If history
-        holds a different command (type or `identity` fields differ), the code changed
-        under a running workflow: raise NonDeterminismError (G5).
+        If history is exhausted, record `payload` as a new command and suspend (or, with
+        `suspend=False`, return None and keep running). If history holds a different
+        command (type or `identity` fields differ), the code changed under a running
+        workflow: raise NonDeterminismError (G5).
         """
         if self._pos >= len(self._commands):
             self._pos += 1
-            self.new_command = Command(type, payload)
-            raise _Suspend()
+            self.new_commands.append(Command(type, payload))
+            if suspend:
+                raise _Suspend()
+            return None
         recorded = self._commands[self._pos]
         expected = {k: recorded.payload.get(k) for k in identity}
         actual = {k: payload[k] for k in identity}
@@ -76,7 +84,7 @@ class Context:
             # exceptions cannot hide it.
             self.nondeterminism = NonDeterminismError(
                 f"command {self._pos}: history has {recorded.type} "
-                f"{ {k: recorded.payload.get(k) for k in ('name', 'args', 'seconds') if k in recorded.payload} }, "
+                f"{ {k: recorded.payload.get(k) for k in ('name', 'args', 'seconds', 'kind') if k in recorded.payload} }, "
                 f"code issued {type} {actual}"
             )
             raise self.nondeterminism
@@ -110,6 +118,27 @@ class Context:
                                  identity=("seconds", "for_signal"))
         if recorded.seq not in self._results:
             raise _Suspend()
+
+    def _marker(self, kind: str, make) -> Any:
+        """Return the value recorded for this marker, or record a fresh one from `make()`."""
+        recorded = self._command("MarkerRecorded", {"kind": kind, "value": None}, identity=("kind",), suspend=False)
+        if recorded is not None:
+            return recorded.payload["value"]
+        value = _normalize(make())
+        self.new_commands[-1].payload["value"] = value
+        return value
+
+    def now(self) -> datetime:
+        """The current UTC time, recorded the first time so every replay sees the same value."""
+        return datetime.fromisoformat(self._marker("now", lambda: datetime.now(timezone.utc).isoformat()))
+
+    def random(self) -> float:
+        """A random float in [0, 1), recorded so every replay sees the same value."""
+        return self._marker("random", random.random)
+
+    def uuid4(self) -> UUID:
+        """A random UUID, recorded so every replay sees the same value."""
+        return UUID(self._marker("uuid4", lambda: str(uuid.uuid4())))
 
     async def wait_signal(self, name: str, timeout: float | None = None) -> Any:
         """Wait for the next signal called `name` and return its payload.
@@ -147,19 +176,22 @@ class Context:
         raise _Suspend()
 
 
+# Every outcome but NonDeterministic carries the new commands to append, in order.
 @dataclass
 class Completed:
     result: Any
+    commands: list[Command] = field(default_factory=list)
 
 
 @dataclass
 class Failed:
     error: str
+    commands: list[Command] = field(default_factory=list)
 
 
 @dataclass
 class Suspended:
-    command: Command | None  # None: waiting on something already scheduled
+    commands: list[Command] = field(default_factory=list)  # empty: waiting on something already recorded
 
 
 @dataclass
@@ -172,9 +204,9 @@ async def replay(fn, ctx: Context, input: Any) -> Completed | Failed | Suspended
     try:
         result = await fn(ctx, input)
     except _Suspend:
-        outcome = Suspended(ctx.new_command)
+        outcome = Suspended(ctx.new_commands)
     except Exception as e:
-        outcome = Failed(f"{type(e).__name__}: {e}")
+        outcome = Failed(f"{type(e).__name__}: {e}", ctx.new_commands)
     else:
         outcome = None
     if ctx.nondeterminism is not None:
@@ -182,6 +214,6 @@ async def replay(fn, ctx: Context, input: Any) -> Completed | Failed | Suspended
     if outcome is not None:
         return outcome
     try:
-        return Completed(_normalize(result))
+        return Completed(_normalize(result), ctx.new_commands)
     except (TypeError, ValueError) as e:
-        return Failed(f"workflow result is not JSON-serializable: {e}")
+        return Failed(f"workflow result is not JSON-serializable: {e}", ctx.new_commands)

@@ -98,19 +98,19 @@ class WorkflowWorker(_Worker):
     async def _apply(self, conn, claim, outcome) -> None:
         wf_id, epoch = claim.workflow_id, claim.epoch
         await store.take_own_task(conn, claim, self.id)  # first: tasks before workflows
+        for cmd in getattr(outcome, "commands", []):
+            seq = await store.append(conn, wf_id, epoch, cmd.type, cmd.payload)
+            if cmd.type == "TimerStarted":
+                await store.enqueue_timer(conn, wf_id, seq, cmd.payload["seconds"])
+            elif cmd.type == "ActivityScheduled":
+                # Stable idempotency key: the seq of the ActivityScheduled event never
+                # changes, however many times the activity is retried.
+                await store.enqueue_activity(conn, wf_id, {
+                    **cmd.payload, "scheduled_seq": seq, "idempotency_key": f"{wf_id}:{seq}",
+                })
         match outcome:
-            case Suspended(command=None) | None:
+            case Suspended() | None:
                 pass
-            case Suspended(command=cmd):
-                seq = await store.append(conn, wf_id, epoch, cmd.type, cmd.payload)
-                if cmd.type == "TimerStarted":
-                    await store.enqueue_timer(conn, wf_id, seq, cmd.payload["seconds"])
-                else:
-                    # Stable idempotency key: the seq of the ActivityScheduled event never
-                    # changes, however many times the activity is retried.
-                    await store.enqueue_activity(conn, wf_id, {
-                        **cmd.payload, "scheduled_seq": seq, "idempotency_key": f"{wf_id}:{seq}",
-                    })
             case Completed(result=result):
                 await store.append(conn, wf_id, epoch, "WorkflowCompleted", {"result": result})
                 await conn.execute("UPDATE workflows SET status = 'completed', result = $2 WHERE id = $1", wf_id, result)

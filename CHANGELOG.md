@@ -29,6 +29,8 @@ or the database schema; such changes and their migration steps are listed here.
 - Signals: `client.signal(id, name, payload)` and `await ctx.wait_signal(name, timeout=)`.
   Signals are received in send order, each exactly once; signalling a finished workflow
   raises `WorkflowNotRunningError`.
+- `ctx.now()`, `ctx.random()` and `ctx.uuid4()`: values are recorded as markers the first
+  time, so every replay sees the same value.
 
 ### Fixed
 - A deadlock between delivering an event (activity result, timer, signal) and claiming
