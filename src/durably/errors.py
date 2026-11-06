@@ -24,3 +24,7 @@ class ActivityError(DurablyError):
 
 class WorkflowFailedError(DurablyError):
     """Raised by `Client.result` when the workflow ended in failure."""
+
+
+class WorkflowNotRunningError(DurablyError):
+    """Raised by `Client.signal` when the workflow does not exist or has already finished."""

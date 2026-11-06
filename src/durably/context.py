@@ -12,6 +12,7 @@ the next event wakes a fresh replay.
 """
 
 import json
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
@@ -47,6 +48,11 @@ class Context:
         self.workflow_id = workflow_id
         self._commands = [e for e in history if e.type in COMMAND_TYPES]
         self._results = {e.payload[field]: e for e in history if (field := RESULT_TYPES.get(e.type))}
+        self._signals: dict[str, list[Event]] = defaultdict(list)
+        for e in history:
+            if e.type == "SignalReceived":
+                self._signals[e.payload["name"]].append(e)
+        self._signals_taken: Counter[str] = Counter()
         self._pos = 0
         self.new_command: Command | None = None
         self.nondeterminism: NonDeterminismError | None = None
@@ -100,9 +106,45 @@ class Context:
 
         The wake-up time is fixed when the timer is first recorded, on the database clock.
         """
-        recorded = self._command("TimerStarted", {"seconds": float(seconds)}, identity=("seconds",))
+        recorded = self._command("TimerStarted", {"seconds": float(seconds), "for_signal": None},
+                                 identity=("seconds", "for_signal"))
         if recorded.seq not in self._results:
             raise _Suspend()
+
+    async def wait_signal(self, name: str, timeout: float | None = None) -> Any:
+        """Wait for the next signal called `name` and return its payload.
+
+        Signals are taken in the order they were sent, each exactly once (G8): the n-th
+        wait for `name` gets the n-th signal, on every replay. With `timeout`, returns None
+        if no signal arrives in time; a later signal then goes to the next wait.
+        """
+        n = self._signals_taken[name]
+        signals = self._signals[name]
+        signal = signals[n] if n < len(signals) else None
+
+        # A timed wait that found no signal yet started a timer. On replay, tell that apart
+        # from a wait that got its signal straight away: the timer is the next command and
+        # the signal (if any) arrived after it.
+        nxt = self._commands[self._pos] if self._pos < len(self._commands) else None
+        timer_was_started = (
+            timeout is not None and nxt is not None and nxt.type == "TimerStarted"
+            and nxt.payload.get("for_signal") == name and (signal is None or signal.seq > nxt.seq)
+        )
+        if not timer_was_started:
+            if signal is not None:
+                self._signals_taken[name] += 1
+                return signal.payload["payload"]
+            if timeout is None:
+                raise _Suspend()  # nothing to schedule; the signal itself wakes the workflow
+        timer = self._command("TimerStarted", {"seconds": float(timeout), "for_signal": name},
+                              identity=("seconds", "for_signal"))
+        fired = self._results.get(timer.seq)
+        if signal is not None and (fired is None or signal.seq < fired.seq):
+            self._signals_taken[name] += 1
+            return signal.payload["payload"]
+        if fired is not None:
+            return None  # timed out; this signal (if it comes) is left for the next wait
+        raise _Suspend()
 
 
 @dataclass

@@ -61,7 +61,7 @@ async def naps(ctx, input):
 
 async def test_sleep_records_a_timer_and_suspends():
     outcome = await replay(naps, Context(WF, []), None)
-    assert outcome == Suspended(Command("TimerStarted", {"seconds": 30.0}))
+    assert outcome == Suspended(Command("TimerStarted", {"seconds": 30.0, "for_signal": None}))
 
 
 async def test_sleep_waits_until_the_timer_fires():
@@ -74,3 +74,49 @@ async def test_sleep_waits_until_the_timer_fires():
 async def test_changed_sleep_duration_is_nondeterminism():
     history = [Event(2, "TimerStarted", {"seconds": 10.0})]
     assert isinstance(await replay(naps, Context(WF, history), None), NonDeterministic)
+
+
+def signal(seq, name, payload):
+    return Event(seq, "SignalReceived", {"name": name, "payload": payload})
+
+
+async def waits_twice(ctx, input):
+    return [await ctx.wait_signal("msg"), await ctx.wait_signal("msg")]
+
+
+async def test_signals_are_taken_in_order_once_each():
+    history = [signal(2, "msg", "a"), signal(3, "other", "x"), signal(4, "msg", "b"), signal(5, "msg", "c")]
+    assert await replay(waits_twice, Context(WF, history), None) == Completed(["a", "b"])
+
+
+async def test_wait_without_signal_suspends_without_a_command():
+    assert await replay(waits_twice, Context(WF, [signal(2, "msg", "a")]), None) == Suspended(None)
+
+
+async def timed_then_untimed(ctx, input):
+    first = await ctx.wait_signal("msg", timeout=5)
+    second = await ctx.wait_signal("msg")
+    return [first, second]
+
+
+async def test_timed_wait_starts_a_timer_when_no_signal_yet():
+    outcome = await replay(timed_then_untimed, Context(WF, []), None)
+    assert outcome == Suspended(Command("TimerStarted", {"seconds": 5.0, "for_signal": "msg"}))
+
+
+async def test_signal_before_the_timer_fires_wins():
+    history = [Event(2, "TimerStarted", {"seconds": 5.0, "for_signal": "msg"}), signal(3, "msg", "a"),
+               signal(4, "msg", "b")]
+    assert await replay(timed_then_untimed, Context(WF, history), None) == Completed(["a", "b"])
+
+
+async def test_timeout_returns_none_and_late_signal_goes_to_next_wait():
+    history = [Event(2, "TimerStarted", {"seconds": 5.0, "for_signal": "msg"}),
+               Event(3, "TimerFired", {"started_seq": 2}), signal(4, "msg", "late")]
+    assert await replay(timed_then_untimed, Context(WF, history), None) == Completed([None, "late"])
+
+
+async def test_signal_already_waiting_needs_no_timer():
+    # Run 1 saw the signal immediately and started no timer; replays must agree.
+    history = [signal(2, "msg", "a"), signal(3, "msg", "b")]
+    assert await replay(timed_then_untimed, Context(WF, history), None) == Completed(["a", "b"])

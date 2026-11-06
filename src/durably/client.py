@@ -8,7 +8,7 @@ import asyncpg
 
 from durably import registry, store
 from durably.db import create_pool
-from durably.errors import WorkflowFailedError
+from durably.errors import WorkflowFailedError, WorkflowNotRunningError
 
 
 class Client:
@@ -49,6 +49,18 @@ class Client:
             )
             await store.wake_workflow(conn, wf_id)
         return str(wf_id)
+
+    async def signal(self, workflow_id: str, name: str, payload: Any = None) -> None:
+        """Send a signal to a running workflow; `ctx.wait_signal(name)` receives it.
+
+        The signal is recorded in the workflow's history before this returns, so it is not
+        lost if no worker is running. Raises WorkflowNotRunningError if the workflow has
+        finished or does not exist.
+        """
+        async with self.pool.acquire() as conn, conn.transaction():
+            seq = await store.deliver(conn, workflow_id, "SignalReceived", {"name": name, "payload": payload})
+            if seq is None:  # raised inside the transaction, so the wake-up rolls back too
+                raise WorkflowNotRunningError(f"workflow {workflow_id} is not running")
 
     async def describe(self, workflow_id: str) -> dict:
         async with self.pool.acquire() as conn:

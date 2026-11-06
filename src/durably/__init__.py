@@ -3,7 +3,9 @@
 from durably.activity_context import ActivityInfo, activity_info, heartbeat
 from durably.client import Client
 from durably.context import Context
-from durably.errors import ActivityError, NonDeterminismError, StaleWorkerError, WorkflowFailedError
+from durably.errors import (
+    ActivityError, NonDeterminismError, StaleWorkerError, WorkflowFailedError, WorkflowNotRunningError,
+)
 from durably.registry import activity, workflow
 
 __version__ = "0.1.0.dev0"
@@ -18,6 +20,7 @@ def __getattr__(name: str):
 
 __all__ = [
     "ActivityError", "ActivityInfo", "ActivityWorker", "Client", "Context", "NonDeterminismError",
-    "StaleWorkerError", "WorkflowFailedError", "WorkflowWorker", "activity", "activity_info",
+    "StaleWorkerError", "WorkflowFailedError", "WorkflowNotRunningError", "WorkflowWorker",
+    "activity", "activity_info",
     "heartbeat", "workflow",
 ]
