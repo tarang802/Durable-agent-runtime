@@ -85,6 +85,23 @@ async def embed_documents(doc_ids, *, idempotency_key):
 await ctx.activity("embed_documents", [doc_ids], heartbeat_timeout=30)
 ```
 
+Use `ctx.now()`, `ctx.random()` and `ctx.uuid4()` instead of `datetime.now()`, `random`
+and `uuid`: the first value is recorded, so replays see the same one.
+
+Agents that run indefinitely (a chat assistant, a monitor) roll over to a fresh run before
+their history grows large, so replay stays fast:
+
+```python
+@durably.workflow("assistant")
+async def assistant(ctx, state):
+    while True:
+        message = await ctx.wait_signal("message")
+        reply = await ctx.activity("llm", [state["memory"], message])
+        state["memory"] = await ctx.activity("summarize", [state["memory"], message, reply])
+        if ctx.should_continue_as_new():  # history reached --max-history events
+            ctx.continue_as_new(state)  # unread messages carry over to the new run
+```
+
 Run workers, then start workflows from your app:
 
 ```bash
@@ -161,9 +178,11 @@ workflows or scale beyond a single database.
   supported.
 - An activity that runs longer than the worker lease (30 s by default) without a
   `heartbeat_timeout` is treated as crashed and run again. Heartbeat long activities.
-- Workflow code must make the same calls on every replay: read the clock, random numbers
-  or the network inside activities, not directly in the workflow, and wait with
-  `ctx.sleep`, not `asyncio.sleep`.
+- Workflow code must make the same calls on every replay: use `ctx.now()`, `ctx.random()`
+  and `ctx.sleep()` rather than the clock, `random` or `asyncio.sleep`, and do network I/O
+  in activities.
+- Replay reads a run's whole history, so workflows that loop indefinitely should use
+  Continue-As-New.
 - No schema migrations: upgrading between 0.x releases may require re-creating tables.
 - Side effects are at-least-once; make activities idempotent with the key provided.
 
