@@ -19,6 +19,8 @@ jobs:
         run: docker compose run --rm --build --no-deps tests mypy
       - name: Test suite
         run: docker compose run --rm tests pytest -q
+      - name: Run the example
+        run: docker compose run --rm tests python -m examples.research_agent.run
       - name: Build and check package
         run: docker compose run --rm --no-deps tests sh -c "python -m build && twine check dist/*"
 

@@ -29,6 +29,7 @@ services:
       - ./src:/app/src
       - ./tests:/app/tests
       - ./experiments:/app/experiments
+      - ./examples:/app/examples
     depends_on:
       postgres:
         condition: service_healthy
