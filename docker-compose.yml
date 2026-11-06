@@ -28,6 +28,7 @@ services:
     volumes:
       - ./src:/app/src
       - ./tests:/app/tests
+      - ./experiments:/app/experiments
     depends_on:
       postgres:
         condition: service_healthy
