@@ -21,3 +21,6 @@ or the database schema; such changes and their migration steps are listed here.
   they are shared across worker processes and survive crashes.
 - Crash-recovery test suite with real worker processes: resume after a crash, a
   failpoint matrix, and a frozen-worker test with fencing on and off.
+- Activity heartbeats: `await durably.heartbeat(details)` extends the lease;
+  `heartbeat_timeout=` on `ctx.activity` retries hung attempts; the next attempt reads the
+  last details from `durably.activity_info().heartbeat_details`.

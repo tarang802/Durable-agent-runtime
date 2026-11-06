@@ -1,5 +1,6 @@
 """durably: durable execution for AI agents, with just Postgres."""
 
+from durably.activity_context import ActivityInfo, activity_info, heartbeat
 from durably.client import Client
 from durably.context import Context
 from durably.errors import ActivityError, NonDeterminismError, StaleWorkerError, WorkflowFailedError
@@ -16,6 +17,7 @@ def __getattr__(name: str):
     raise AttributeError(f"module 'durably' has no attribute {name!r}")
 
 __all__ = [
-    "ActivityError", "ActivityWorker", "Client", "Context", "NonDeterminismError",
-    "StaleWorkerError", "WorkflowFailedError", "WorkflowWorker", "activity", "workflow",
+    "ActivityError", "ActivityInfo", "ActivityWorker", "Client", "Context", "NonDeterminismError",
+    "StaleWorkerError", "WorkflowFailedError", "WorkflowWorker", "activity", "activity_info",
+    "heartbeat", "workflow",
 ]

@@ -43,8 +43,8 @@ async def workers(pool):
     stop = asyncio.Event()
     tasks = []
 
-    def start(lease: float = 5.0):
-        for cls in (WorkflowWorker, ActivityWorker):
+    def start(lease: float = 5.0, activity_workers: int = 1):
+        for cls in [WorkflowWorker] + [ActivityWorker] * activity_workers:
             tasks.append(asyncio.create_task(cls(pool, lease=lease, poll=0.01).run(stop)))
 
     yield start

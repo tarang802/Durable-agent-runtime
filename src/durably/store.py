@@ -83,6 +83,9 @@ async def claim_activity_task(conn: asyncpg.Connection, worker_id: str, lease_s:
 
     Does not touch the workflow's epoch: that would fence out the workflow worker. Activity
     results are guarded by the task's attempt instead (see `record_activity_result`).
+
+    An activity with a heartbeat timeout is leased for that long instead, so a hung
+    activity that stops heartbeating is reclaimed quickly.
     """
     row = await conn.fetchrow(
         """
@@ -95,7 +98,8 @@ async def claim_activity_task(conn: asyncpg.Connection, worker_id: str, lease_s:
             FOR UPDATE SKIP LOCKED
         )
         UPDATE tasks SET claimed_by = $1,
-                         lease_until = now() + make_interval(secs => $2),
+                         lease_until = now() + make_interval(
+                             secs => COALESCE((tasks.payload->>'heartbeat_timeout')::float8, $2)),
                          attempt = attempt + 1
         FROM due WHERE tasks.id = due.id
         RETURNING tasks.id, tasks.workflow_id, tasks.attempt, tasks.payload
@@ -205,6 +209,25 @@ async def record_activity_result(
         )
         await wake_workflow(conn, claim.workflow_id)
     return True
+
+
+async def heartbeat(
+    conn: asyncpg.Connection, claim: Claim, worker_id: str, lease_s: float, details=None
+) -> bool:
+    """Extend an activity's lease and save progress details for a later attempt.
+
+    Guarded like a result: returns False if another worker has re-claimed the task.
+    """
+    status = await conn.execute(
+        """
+        UPDATE tasks SET lease_until = now() + make_interval(secs => $4),
+                         payload = CASE WHEN $5::jsonb IS NULL THEN payload
+                                        ELSE jsonb_set(payload, '{heartbeat_details}', $5) END
+        WHERE id = $1 AND attempt = $2 AND claimed_by = $3
+        """,
+        claim.task_id, claim.attempt, worker_id, lease_s, details,
+    )
+    return status != "UPDATE 0"
 
 
 async def retry_activity(conn: asyncpg.Connection, claim: Claim, worker_id: str, delay_s: float) -> bool:

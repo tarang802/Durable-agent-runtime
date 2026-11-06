@@ -51,8 +51,12 @@ class Context:
         self.nondeterminism: NonDeterminismError | None = None
 
     async def activity(self, name: str, args: list | tuple = (), *, retry: dict | None = None,
-                       timeout: float | None = None) -> Any:
-        """Run an activity at least once and return its result (or raise ActivityError)."""
+                       timeout: float | None = None, heartbeat_timeout: float | None = None) -> Any:
+        """Run an activity at least once and return its result (or raise ActivityError).
+
+        `timeout` limits one attempt. With `heartbeat_timeout`, an attempt that goes that
+        long without calling `durably.heartbeat()` is treated as hung and retried.
+        """
         args = _normalize(list(args))
         if self._pos < len(self._commands):
             recorded = self._commands[self._pos]
@@ -74,7 +78,9 @@ class Context:
             return outcome.payload["result"]
 
         self._pos += 1
-        self.new_command = Command("ActivityScheduled", {"name": name, "args": args, "retry": retry, "timeout": timeout})
+        self.new_command = Command("ActivityScheduled", {
+            "name": name, "args": args, "retry": retry, "timeout": timeout, "heartbeat_timeout": heartbeat_timeout,
+        })
         raise _Suspend()
 
 

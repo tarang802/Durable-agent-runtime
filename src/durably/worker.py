@@ -14,7 +14,8 @@ import uuid
 
 import asyncpg
 
-from durably import registry, retry, store
+from durably import activity_context, registry, retry, store
+from durably.activity_context import ActivityInfo
 from durably.context import Completed, Context, Failed, NonDeterministic, Suspended, replay
 from durably.db import create_pool
 from durably.errors import StaleWorkerError
@@ -134,8 +135,15 @@ class ActivityWorker(_Worker):
             if fn is None:
                 raise LookupError(f"activity {p['name']!r} is not registered in this worker")
             failpoint("before_activity")
-            call = fn(*p["args"], idempotency_key=p["idempotency_key"])
-            result = await asyncio.wait_for(call, p["timeout"]) if p.get("timeout") else await call
+            info = ActivityInfo(str(claim.workflow_id), p["name"], p["idempotency_key"], claim.attempt,
+                                p.get("heartbeat_details"))
+            token = activity_context._current.set(activity_context._Running(
+                info, self.pool, claim, self.id, p.get("heartbeat_timeout") or self.lease))
+            try:
+                call = fn(*p["args"], idempotency_key=p["idempotency_key"])
+                result = await asyncio.wait_for(call, p["timeout"]) if p.get("timeout") else await call
+            finally:
+                activity_context._current.reset(token)
             failpoint("after_effect_before_record")
             payload = {"scheduled_seq": p["scheduled_seq"], "result": result}
         except Exception as e:
