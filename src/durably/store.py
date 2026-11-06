@@ -11,6 +11,7 @@ from uuid import UUID
 import asyncpg
 
 from durably.errors import StaleWorkerError
+from durably.failpoints import failpoint
 
 
 def fencing_enabled() -> bool:
@@ -192,22 +193,63 @@ async def record_activity_result(
         )
         if owned is None:
             return False
-        # Not epoch-fenced: the activity worker never holds the workflow's epoch. The
-        # next_seq row lock still serializes this with any concurrent workflow append.
-        seq = await conn.fetchval(
+        await deliver(conn, claim.workflow_id, type, payload)
+    return True
+
+
+async def deliver(conn: asyncpg.Connection, workflow_id: UUID, type: str, payload: dict) -> int | None:
+    """Append an event that arrives from outside the workflow task, and wake the workflow.
+
+    Used for activity results, fired timers and signals. Not epoch-fenced: the writer
+    never holds the workflow's epoch, and whatever guards the caller has (task attempt,
+    timer row) decides whether to deliver. The `next_seq` row lock still serializes this
+    with any concurrent workflow append. Returns None if the workflow is no longer running.
+    """
+    seq = await conn.fetchval(
+        "UPDATE workflows SET next_seq = next_seq + 1 WHERE id = $1 AND status = 'running' RETURNING next_seq - 1",
+        workflow_id,
+    )
+    if seq is None:
+        return None
+    await conn.execute(
+        "INSERT INTO events (workflow_id, seq, type, payload) VALUES ($1, $2, $3, $4)",
+        workflow_id, seq, type, payload,
+    )
+    await wake_workflow(conn, workflow_id)
+    return seq
+
+
+async def enqueue_timer(conn: asyncpg.Connection, workflow_id: UUID, started_seq: int, seconds: float) -> None:
+    """Schedule a timer task; `visible_at` on the database clock is when it fires."""
+    await conn.execute(
+        """
+        INSERT INTO tasks (workflow_id, kind, visible_at, payload)
+        VALUES ($1, 'timer', now() + make_interval(secs => $2), $3)
+        """,
+        workflow_id, seconds, {"started_seq": started_seq},
+    )
+
+
+async def fire_due_timer(conn: asyncpg.Connection) -> bool:
+    """Fire one due timer. Returns False if none is due.
+
+    Deleting the timer task and appending TimerFired happen in one transaction, so a timer
+    fires exactly once (G7): a worker that dies mid-way rolls back, and the timer stays for
+    the next worker; two workers cannot both take it (SKIP LOCKED).
+    """
+    async with conn.transaction():
+        timer = await conn.fetchrow(
             """
-            UPDATE workflows SET next_seq = next_seq + 1
-            WHERE id = $1 AND status = 'running' RETURNING next_seq - 1
-            """,
-            claim.workflow_id,
+            DELETE FROM tasks WHERE id = (
+                SELECT id FROM tasks WHERE kind = 'timer' AND visible_at <= now()
+                ORDER BY visible_at LIMIT 1 FOR UPDATE SKIP LOCKED
+            ) RETURNING workflow_id, payload
+            """
         )
-        if seq is None:  # workflow already finished; nothing is waiting for this result
-            return True
-        await conn.execute(
-            "INSERT INTO events (workflow_id, seq, type, payload) VALUES ($1, $2, $3, $4)",
-            claim.workflow_id, seq, type, payload,
-        )
-        await wake_workflow(conn, claim.workflow_id)
+        if timer is None:
+            return False
+        failpoint("during_timer_fire")
+        await deliver(conn, timer["workflow_id"], "TimerFired", {"started_seq": timer["payload"]["started_seq"]})
     return True
 
 

@@ -24,3 +24,5 @@ or the database schema; such changes and their migration steps are listed here.
 - Activity heartbeats: `await durably.heartbeat(details)` extends the lease;
   `heartbeat_timeout=` on `ctx.activity` retries hung attempts; the next attempt reads the
   last details from `durably.activity_info().heartbeat_details`.
+- Durable timers: `await ctx.sleep(seconds)` survives crashes and deploys; each timer
+  fires exactly once. Workflow workers fire due timers.

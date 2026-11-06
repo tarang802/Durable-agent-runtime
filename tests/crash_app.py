@@ -19,3 +19,9 @@ async def research(ctx, topic):
     plan = await ctx.activity("shared_llm", [f"plan {topic}"])
     summary = await ctx.activity("shared_llm", [f"summarize {plan}"])
     return summary
+
+
+@durably.workflow("nap")
+async def nap(ctx, topic):
+    await ctx.sleep(0.5)
+    return await ctx.activity("shared_llm", [f"after nap {topic}"])

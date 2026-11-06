@@ -5,7 +5,7 @@ reaches `<name>`. `FAILPOINT=<name>:pause` stops it with SIGSTOP instead, so a t
 let its lease expire and resume it later with SIGCONT (POSIX only).
 
 Points: `before_claim`, `after_claim`, `before_activity`, `after_effect_before_record`,
-`before_append`, `after_record_before_ack`.
+`before_append`, `after_record_before_ack`, `during_timer_fire`.
 """
 
 import os

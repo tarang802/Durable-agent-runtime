@@ -62,6 +62,10 @@ class WorkflowWorker(_Worker):
     kind = "workflow"
 
     async def run_once(self) -> bool:
+        # Workflow workers also act as the timer poller.
+        async with self.pool.acquire() as conn:
+            if await store.fire_due_timer(conn):
+                return True
         failpoint("before_claim")
         async with self.pool.acquire() as conn:
             claim = await store.claim_workflow_task(conn, self.id, self.lease)
@@ -98,11 +102,14 @@ class WorkflowWorker(_Worker):
                 pass
             case Suspended(command=cmd):
                 seq = await store.append(conn, wf_id, epoch, cmd.type, cmd.payload)
-                # Stable idempotency key: the seq of the ActivityScheduled event never
-                # changes, however many times the activity is retried.
-                await store.enqueue_activity(conn, wf_id, {
-                    **cmd.payload, "scheduled_seq": seq, "idempotency_key": f"{wf_id}:{seq}",
-                })
+                if cmd.type == "TimerStarted":
+                    await store.enqueue_timer(conn, wf_id, seq, cmd.payload["seconds"])
+                else:
+                    # Stable idempotency key: the seq of the ActivityScheduled event never
+                    # changes, however many times the activity is retried.
+                    await store.enqueue_activity(conn, wf_id, {
+                        **cmd.payload, "scheduled_seq": seq, "idempotency_key": f"{wf_id}:{seq}",
+                    })
             case Completed(result=result):
                 await store.append(conn, wf_id, epoch, "WorkflowCompleted", {"result": result})
                 await conn.execute("UPDATE workflows SET status = 'completed', result = $2 WHERE id = $1", wf_id, result)

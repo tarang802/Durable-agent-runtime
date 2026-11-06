@@ -19,8 +19,9 @@ from uuid import UUID
 from durably.errors import ActivityError, NonDeterminismError
 from durably.store import Event
 
-COMMAND_TYPES = {"ActivityScheduled"}
-RESULT_TYPES = {"ActivityCompleted", "ActivityFailed"}
+COMMAND_TYPES = {"ActivityScheduled", "TimerStarted"}
+# Result event type -> payload field naming the command it answers.
+RESULT_TYPES = {"ActivityCompleted": "scheduled_seq", "ActivityFailed": "scheduled_seq", "TimerFired": "started_seq"}
 
 
 class _Suspend(BaseException):
@@ -45,10 +46,36 @@ class Context:
     def __init__(self, workflow_id: UUID, history: list[Event]):
         self.workflow_id = workflow_id
         self._commands = [e for e in history if e.type in COMMAND_TYPES]
-        self._results = {e.payload["scheduled_seq"]: e for e in history if e.type in RESULT_TYPES}
+        self._results = {e.payload[field]: e for e in history if (field := RESULT_TYPES.get(e.type))}
         self._pos = 0
         self.new_command: Command | None = None
         self.nondeterminism: NonDeterminismError | None = None
+
+    def _command(self, type: str, payload: dict, identity: tuple[str, ...]) -> Event:
+        """Take the next command position and return the event history recorded there.
+
+        If history is exhausted, record `payload` as a new command and suspend. If history
+        holds a different command (type or `identity` fields differ), the code changed
+        under a running workflow: raise NonDeterminismError (G5).
+        """
+        if self._pos >= len(self._commands):
+            self._pos += 1
+            self.new_command = Command(type, payload)
+            raise _Suspend()
+        recorded = self._commands[self._pos]
+        expected = {k: recorded.payload.get(k) for k in identity}
+        actual = {k: payload[k] for k in identity}
+        if recorded.type != type or expected != actual:
+            # Remembered on the context too, so workflow code that catches broad
+            # exceptions cannot hide it.
+            self.nondeterminism = NonDeterminismError(
+                f"command {self._pos}: history has {recorded.type} "
+                f"{ {k: recorded.payload.get(k) for k in ('name', 'args', 'seconds') if k in recorded.payload} }, "
+                f"code issued {type} {actual}"
+            )
+            raise self.nondeterminism
+        self._pos += 1
+        return recorded
 
     async def activity(self, name: str, args: list | tuple = (), *, retry: dict | None = None,
                        timeout: float | None = None, heartbeat_timeout: float | None = None) -> Any:
@@ -57,31 +84,25 @@ class Context:
         `timeout` limits one attempt. With `heartbeat_timeout`, an attempt that goes that
         long without calling `durably.heartbeat()` is treated as hung and retried.
         """
-        args = _normalize(list(args))
-        if self._pos < len(self._commands):
-            recorded = self._commands[self._pos]
-            if (recorded.type, recorded.payload["name"], recorded.payload["args"]) != ("ActivityScheduled", name, args):
-                # Remembered on the context too, so workflow code that catches broad
-                # exceptions cannot hide it (G5).
-                self.nondeterminism = NonDeterminismError(
-                    f"command {self._pos}: history has {recorded.type} "
-                    f"{recorded.payload.get('name')!r}{recorded.payload.get('args')}, "
-                    f"code called activity {name!r}{args}"
-                )
-                raise self.nondeterminism
-            self._pos += 1
-            outcome = self._results.get(recorded.seq)
-            if outcome is None:
-                raise _Suspend()  # scheduled, still running
-            if outcome.type == "ActivityFailed":
-                raise ActivityError(name, outcome.payload["error"])
-            return outcome.payload["result"]
+        recorded = self._command("ActivityScheduled", {
+            "name": name, "args": _normalize(list(args)), "retry": retry, "timeout": timeout,
+            "heartbeat_timeout": heartbeat_timeout,
+        }, identity=("name", "args"))
+        outcome = self._results.get(recorded.seq)
+        if outcome is None:
+            raise _Suspend()  # scheduled, still running
+        if outcome.type == "ActivityFailed":
+            raise ActivityError(name, outcome.payload["error"])
+        return outcome.payload["result"]
 
-        self._pos += 1
-        self.new_command = Command("ActivityScheduled", {
-            "name": name, "args": args, "retry": retry, "timeout": timeout, "heartbeat_timeout": heartbeat_timeout,
-        })
-        raise _Suspend()
+    async def sleep(self, seconds: float) -> None:
+        """Sleep durably: survives crashes, restarts and deploys.
+
+        The wake-up time is fixed when the timer is first recorded, on the database clock.
+        """
+        recorded = self._command("TimerStarted", {"seconds": float(seconds)}, identity=("seconds",))
+        if recorded.seq not in self._results:
+            raise _Suspend()
 
 
 @dataclass

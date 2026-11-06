@@ -76,3 +76,16 @@ async def test_crash_matrix(client, spawn, shared_llm, kind, point, duplicates):
     assert stats.duplicate_calls == duplicates
     # G6: every step is billed exactly once, whatever the crash point.
     assert stats.effects_by_prompt == {step: 1 for step in STEPS}
+
+
+async def test_timer_fires_once_after_crash_while_firing(client, spawn, shared_llm):
+    wf = await client.start("nap", TOPIC)
+    crashing = await spawn("workflow", failpoint="during_timer_fire")
+    await spawn("activity")
+
+    # The worker dies inside the transaction that fires the timer, so nothing is written.
+    assert await crashing.exit_code() == EXIT_CODE
+    await spawn("workflow")
+
+    assert await client.result(wf, timeout=20) == f"llm(after nap {TOPIC})"
+    assert [e.type for e in await client.history(wf)].count("TimerFired") == 1  # G7
