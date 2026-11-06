@@ -26,3 +26,10 @@ or the database schema; such changes and their migration steps are listed here.
   last details from `durably.activity_info().heartbeat_details`.
 - Durable timers: `await ctx.sleep(seconds)` survives crashes and deploys; each timer
   fires exactly once. Workflow workers fire due timers.
+- Signals: `client.signal(id, name, payload)` and `await ctx.wait_signal(name, timeout=)`.
+  Signals are received in send order, each exactly once; signalling a finished workflow
+  raises `WorkflowNotRunningError`.
+
+### Fixed
+- A deadlock between delivering an event (activity result, timer, signal) and claiming
+  the same workflow's task: all writes now take task locks before workflow locks.

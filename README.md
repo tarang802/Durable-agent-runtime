@@ -50,6 +50,41 @@ async def research_agent(ctx, input):
     return {"summary": summary}
 ```
 
+Workflows can sleep for minutes or days and wait for outside events. Both survive
+crashes and deploys:
+
+```python
+@durably.workflow("publish_with_approval")
+async def publish_with_approval(ctx, draft_id):
+    draft = await ctx.activity("llm", [f"Write post {draft_id}"])
+    decision = await ctx.wait_signal("review", timeout=3 * 24 * 3600)  # None if nobody answers in 3 days
+    if decision is None or not decision["approved"]:
+        return "not published"
+    await ctx.sleep(3600)  # publish an hour later
+    await ctx.activity("publish", [draft])
+    return "published"
+```
+
+```python
+await client.signal(wf_id, "review", {"approved": True})
+```
+
+Long-running activities heartbeat so a hung attempt is detected and retried, resuming
+from the last saved progress:
+
+```python
+@durably.activity("embed_documents")
+async def embed_documents(doc_ids, *, idempotency_key):
+    start = durably.activity_info().heartbeat_details or 0  # progress from a previous attempt
+    for i in range(start, len(doc_ids)):
+        await embed(doc_ids[i])
+        await durably.heartbeat(i + 1)
+```
+
+```python
+await ctx.activity("embed_documents", [doc_ids], heartbeat_timeout=30)
+```
+
 Run workers, then start workflows from your app:
 
 ```bash
@@ -78,6 +113,8 @@ killed or frozen mid-run.
 | G4 | At most one terminal event per workflow | `test_second_terminal_event_is_rejected` |
 | G5 | A changed workflow body is detected as non-determinism | `test_changed_code_is_nondeterminism` |
 | G6 | With an idempotent provider, every step is billed exactly once, whatever the crash point | `test_crash_matrix` |
+| G7 | A durable timer fires exactly once, even if a worker dies while firing it | `test_timer_fires_once_after_crash_while_firing` |
+| G8 | Each signal is received exactly once, in send order | `test_signals_are_taken_in_order_once_each`, `test_signals_sent_before_any_worker_runs_are_kept_in_order` |
 
 ### Crash matrix
 
@@ -111,7 +148,7 @@ be idempotent.
 | Infrastructure | The Postgres you already run | A Temporal server cluster (or Temporal Cloud) |
 | Languages | Python | Go, Java, TypeScript, Python, .NET, PHP |
 | Scale | One Postgres; thousands of workflows | Very large fleets, sharded history |
-| Workflow versioning | Detects changed code; `ctx.version` planned | Mature versioning and worker build IDs |
+| Workflow versioning | Detects changed code as non-determinism | Mature versioning and worker build IDs |
 | Setup | `pip install durably` + `durably init-db` | Deploy and operate a server |
 
 Choose durably when you want crash-safe agents inside an existing Python + Postgres
@@ -120,11 +157,14 @@ workflows or scale beyond a single database.
 
 ## Known limitations
 
-- Activities in one workflow run one at a time; parallel activities (`asyncio.gather`)
-  are planned.
-- Timers, signals, heartbeats, `ctx.now()`/`ctx.random()` and Continue-As-New are in
-  progress.
-- No schema migrations yet: upgrading between 0.x releases may require re-creating tables.
+- Activities in one workflow run one at a time; `asyncio.gather` over activities is not
+  supported.
+- An activity that runs longer than the worker lease (30 s by default) without a
+  `heartbeat_timeout` is treated as crashed and run again. Heartbeat long activities.
+- Workflow code must make the same calls on every replay: read the clock, random numbers
+  or the network inside activities, not directly in the workflow, and wait with
+  `ctx.sleep`, not `asyncio.sleep`.
+- No schema migrations: upgrading between 0.x releases may require re-creating tables.
 - Side effects are at-least-once; make activities idempotent with the key provided.
 
 ## Stack
