@@ -1,8 +1,11 @@
 import asyncio
+import json
 import os
 import signal
 import sys
+import urllib.request
 from pathlib import Path
+from urllib.parse import urlparse
 
 import pytest
 
@@ -92,8 +95,11 @@ async def spawn(db):
     procs: list[WorkerProcess] = []
 
     async def start(kind: str, *, failpoint: str | None = None, fencing: bool = True,
-                    lease: float = 1.0) -> WorkerProcess:
+                    lease: float = 1.0, database_url: str | None = None) -> WorkerProcess:
         env = {k: v for k, v in os.environ.items() if k not in ("FAILPOINT", "DURABLY_FENCING")}
+        if database_url:
+            env["FAKE_LLM_URL"] = env["DATABASE_URL"]
+            env["DATABASE_URL"] = database_url
         if failpoint:
             env["FAILPOINT"] = failpoint
         if not fencing:
@@ -110,3 +116,42 @@ async def spawn(db):
         if p.proc.returncode is None:
             p.proc.kill()  # SIGKILL also ends a stopped process
             await p.proc.wait()
+
+
+class PostgresProxy:
+    """A Toxiproxy proxy in front of Postgres, for cutting workers' connections."""
+
+    def __init__(self, api: str, url: str):
+        self.api = api
+        self.url = url  # connect through here instead of DATABASE_URL
+
+    def _call(self, method: str, path: str, body: dict | None = None) -> None:
+        data = json.dumps(body).encode() if body is not None else None
+        req = urllib.request.Request(self.api + path, data=data, method=method,
+                                     headers={"Content-Type": "application/json"})
+        try:
+            urllib.request.urlopen(req, timeout=5).close()
+        except urllib.error.HTTPError as e:
+            if e.code != 409:  # 409: the proxy already exists
+                raise
+
+    async def set_enabled(self, enabled: bool) -> None:
+        await asyncio.to_thread(self._call, "POST", "/proxies/postgres", {"enabled": enabled})
+
+    async def cut(self, seconds: float) -> None:
+        """Drop every open connection and refuse new ones for `seconds`."""
+        await self.set_enabled(False)
+        await asyncio.sleep(seconds)
+        await self.set_enabled(True)
+
+
+@pytest.fixture
+async def pg_proxy(db):
+    direct = urlparse(os.environ["DATABASE_URL"])
+    proxy = PostgresProxy(os.environ["TOXIPROXY_URL"], direct._replace(netloc=f"{direct.username}:{direct.password}@toxiproxy:6432").geturl())
+    await asyncio.to_thread(proxy._call, "POST", "/proxies", {
+        "name": "postgres", "listen": "0.0.0.0:6432", "upstream": f"{direct.hostname}:{direct.port}", "enabled": True,
+    })
+    await proxy.set_enabled(True)
+    yield proxy
+    await proxy.set_enabled(True)

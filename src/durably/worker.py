@@ -26,6 +26,7 @@ from durably.failpoints import failpoint
 log = logging.getLogger("durably.worker")
 
 NONDETERMINISM_RETRY_S = 5.0
+MAX_ERROR_BACKOFF_S = 2.0
 
 
 def _worker_id(kind: str) -> str:
@@ -47,15 +48,24 @@ class _Worker:
 
     async def run(self, stop: asyncio.Event | None = None) -> None:
         stop = stop or asyncio.Event()
+        errors = 0
         while not stop.is_set():
             try:
                 did_work = await self.run_once()
-            except Exception:
-                log.exception("%s: task processing crashed", self.id)
+                errors = 0
+            except Exception as e:
+                # Typically the database is unreachable. Whatever this task did is rolled
+                # back or left to lease expiry; back off instead of hammering the database.
+                errors += 1
+                if errors == 1:
+                    log.exception("%s: task processing failed", self.id)
+                else:
+                    log.warning("%s: still failing (%d in a row): %s", self.id, errors, e)
                 did_work = False
             if not did_work:
+                delay = min(self.poll * 2 ** errors, MAX_ERROR_BACKOFF_S) if errors else self.poll
                 try:
-                    await asyncio.wait_for(stop.wait(), self.poll)
+                    await asyncio.wait_for(stop.wait(), delay)
                 except TimeoutError:
                     pass
 
