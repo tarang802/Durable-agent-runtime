@@ -16,3 +16,8 @@ or the database schema; such changes and their migration steps are listed here.
 - `Client.start` (idempotent by key), `Client.result`, `Client.describe`, `Client.history`.
 - CLI: `durably init-db`, `durably worker --kind workflow|activity`.
 - `durably.testing.FakeLLM` for tests.
+- Failpoints (`FAILPOINT=<name>` / `<name>:pause`) for crash-testing workers.
+- `durably.testing.SharedFakeLLM`: a fake provider whose counters live in Postgres, so
+  they are shared across worker processes and survive crashes.
+- Crash-recovery test suite with real worker processes: resume after a crash, a
+  failpoint matrix, and a frozen-worker test with fencing on and off.

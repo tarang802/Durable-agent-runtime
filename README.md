@@ -65,16 +65,40 @@ wf_id = await client.start(research_agent, {"topic": "durable execution", "email
 print(await client.result(wf_id, timeout=300))
 ```
 
-## Guarantees (planned, one test each)
+## Guarantees
 
-| | Guarantee |
-|---|---|
-| G1 | History is append-only and `(workflow_id, seq)` is unique |
-| G2 | A write from a stale epoch is rejected |
-| G3 | Replay never re-runs an activity recorded as completed |
-| G4 | At most one `WorkflowCompleted` event per workflow |
-| G5 | A changed workflow body is detected as non-determinism |
-| G6 | The fake provider's effect count per idempotency key is exactly one |
+Each guarantee is checked by a test, most of them with real worker processes that are
+killed or frozen mid-run.
+
+| | Guarantee | Test |
+|---|---|---|
+| G1 | History is append-only and `(workflow_id, seq)` is unique | `test_events_are_append_only`, `test_event_seq_is_unique_per_workflow` |
+| G2 | A write from a stale worker is rejected | `test_stale_worker_write_rejected` (paired with `test_without_fencing_stale_worker_corrupts_history`) |
+| G3 | Replay never re-runs an activity recorded as completed | `test_resume_does_not_repeat_completed_activity` |
+| G4 | At most one terminal event per workflow | `test_second_terminal_event_is_rejected` |
+| G5 | A changed workflow body is detected as non-determinism | `test_changed_code_is_nondeterminism` |
+| G6 | With an idempotent provider, every step is billed exactly once, whatever the crash point | `test_crash_matrix` |
+
+### Crash matrix
+
+A worker is killed at each failpoint, a replacement finishes the workflow, and the fake
+provider counts calls:
+
+| Worker | Killed at | Workflow finishes | Duplicate provider calls | Steps billed twice |
+|---|---|---|---|---|
+| activity | `before_claim` | ✅ | 0 | 0 |
+| activity | `after_claim` | ✅ | 0 | 0 |
+| activity | `before_activity` | ✅ | 0 | 0 |
+| activity | `after_effect_before_record` | ✅ | 1 | 0 |
+| activity | `after_record_before_ack` | ✅ | 0 | 0 |
+| workflow | `before_claim` | ✅ | 0 | 0 |
+| workflow | `after_claim` | ✅ | 0 | 0 |
+| workflow | `before_append` | ✅ | 0 | 0 |
+| workflow | `after_record_before_ack` | ✅ | 0 | 0 |
+
+The one duplicate is unavoidable: the provider did the work but the worker died before
+recording it, so the retry calls again. It carries the same idempotency key, so an
+idempotent provider does not bill it twice.
 
 Side effects run **at least once**, with a stable idempotency key
 (`workflow_id:activity_seq`). Exactly-once is impossible in general, so activities should
@@ -116,6 +140,10 @@ on every machine (crash tests rely on POSIX signals). You only need Docker.
 ```bash
 docker compose run --rm --build tests
 ```
+
+Crash tests use failpoints: `FAILPOINT=<name>` makes a worker exit abruptly at that point,
+and `FAILPOINT=<name>:pause` freezes it with SIGSTOP. You can use them to crash-test your
+own workflows the same way.
 
 To create the schema in your own Postgres:
 

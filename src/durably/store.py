@@ -4,12 +4,21 @@ All lease times use the database clock (`now()`), never a worker's clock. Caller
 combine several of these functions must wrap them in one transaction.
 """
 
+import os
 from dataclasses import dataclass
 from uuid import UUID
 
 import asyncpg
 
 from durably.errors import StaleWorkerError
+
+
+def fencing_enabled() -> bool:
+    """`DURABLY_FENCING=off` drops the epoch condition from history writes.
+
+    For tests only: it exists so a test can show the corruption fencing prevents.
+    """
+    return os.environ.get("DURABLY_FENCING", "on") != "off"
 
 
 @dataclass(frozen=True)
@@ -112,10 +121,15 @@ async def append(conn: asyncpg.Connection, workflow_id: UUID, epoch: int, type: 
     paused after any earlier check still matches zero rows here (G2). Taking the next
     seq from `workflows.next_seq` under its row lock keeps seqs gap-free and unique (G1).
     """
-    seq = await conn.fetchval(
-        "UPDATE workflows SET next_seq = next_seq + 1 WHERE id = $1 AND epoch = $2 RETURNING next_seq - 1",
-        workflow_id, epoch,
-    )
+    if fencing_enabled():
+        seq = await conn.fetchval(
+            "UPDATE workflows SET next_seq = next_seq + 1 WHERE id = $1 AND epoch = $2 RETURNING next_seq - 1",
+            workflow_id, epoch,
+        )
+    else:
+        seq = await conn.fetchval(
+            "UPDATE workflows SET next_seq = next_seq + 1 WHERE id = $1 RETURNING next_seq - 1", workflow_id
+        )
     if seq is None:
         raise StaleWorkerError(f"workflow {workflow_id}: epoch {epoch} is stale")
     await conn.execute(
@@ -147,8 +161,8 @@ async def enqueue_activity(conn: asyncpg.Connection, workflow_id: UUID, payload:
 async def release_workflow(conn: asyncpg.Connection, claim: Claim, worker_id: str) -> None:
     """Finish a workflow task: drop it and give up the lease. Fenced like an append."""
     status = await conn.execute(
-        "UPDATE workflows SET lease_owner = NULL, lease_until = NULL WHERE id = $1 AND epoch = $2",
-        claim.workflow_id, claim.epoch,
+        "UPDATE workflows SET lease_owner = NULL, lease_until = NULL WHERE id = $1 AND (epoch = $2 OR NOT $3)",
+        claim.workflow_id, claim.epoch, fencing_enabled(),
     )
     if status == "UPDATE 0":
         raise StaleWorkerError(f"workflow {claim.workflow_id}: epoch {claim.epoch} is stale")

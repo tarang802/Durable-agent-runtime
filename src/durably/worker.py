@@ -18,6 +18,7 @@ from durably import registry, retry, store
 from durably.context import Completed, Context, Failed, NonDeterministic, Suspended, replay
 from durably.db import create_pool
 from durably.errors import StaleWorkerError
+from durably.failpoints import failpoint
 
 log = logging.getLogger("durably.worker")
 
@@ -60,10 +61,12 @@ class WorkflowWorker(_Worker):
     kind = "workflow"
 
     async def run_once(self) -> bool:
+        failpoint("before_claim")
         async with self.pool.acquire() as conn:
             claim = await store.claim_workflow_task(conn, self.id, self.lease)
             if claim is None:
                 return False
+            failpoint("after_claim")
             wf = await conn.fetchrow("SELECT type, input, status FROM workflows WHERE id = $1", claim.workflow_id)
             history = await store.load_history(conn, claim.workflow_id)
 
@@ -75,6 +78,7 @@ class WorkflowWorker(_Worker):
             else:
                 outcome = await replay(fn, Context(claim.workflow_id, history), wf["input"])
 
+            failpoint("before_append")
             try:
                 async with conn.transaction():
                     await self._apply(conn, claim, outcome)
@@ -82,6 +86,8 @@ class WorkflowWorker(_Worker):
                 # Another worker took over after our lease expired. Our whole transaction
                 # rolled back, so history is untouched; just walk away.
                 log.warning("%s: abandoning task %s: %s", self.id, claim.task_id, e)
+                return True
+            failpoint("after_record_before_ack")
         return True
 
     async def _apply(self, conn, claim, outcome) -> None:
@@ -115,18 +121,22 @@ class ActivityWorker(_Worker):
     kind = "activity"
 
     async def run_once(self) -> bool:
+        failpoint("before_claim")
         async with self.pool.acquire() as conn:
             claim = await store.claim_activity_task(conn, self.id, self.lease)
         if claim is None:
             return False
+        failpoint("after_claim")
         p = claim.payload
         policy = retry.policy(p.get("retry"))
         fn = registry.get_activity(p["name"])
         try:
             if fn is None:
                 raise LookupError(f"activity {p['name']!r} is not registered in this worker")
+            failpoint("before_activity")
             call = fn(*p["args"], idempotency_key=p["idempotency_key"])
             result = await asyncio.wait_for(call, p["timeout"]) if p.get("timeout") else await call
+            failpoint("after_effect_before_record")
             payload = {"scheduled_seq": p["scheduled_seq"], "result": result}
         except Exception as e:
             error = f"{type(e).__name__}: {e}"
@@ -143,6 +153,8 @@ class ActivityWorker(_Worker):
         async with self.pool.acquire() as conn:
             if not await store.record_activity_result(conn, claim, self.id, "ActivityCompleted", payload):
                 log.warning("%s: dropped stale result for task %s", self.id, claim.task_id)
+                return True
+        failpoint("after_record_before_ack")
         return True
 
 
