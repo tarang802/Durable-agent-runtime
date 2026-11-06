@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from durably.context import Command, Completed, Context, NonDeterministic, Suspended, replay
+from durably.context import Command, Completed, Context, ContinuedAsNew, NonDeterministic, Suspended, replay
 from durably.store import Event
 
 WF = uuid.uuid4()
@@ -151,3 +151,44 @@ async def test_markers_replay_their_recorded_values():
 async def test_changed_marker_kind_is_nondeterminism():
     history = [Event(2, "MarkerRecorded", {"kind": "random", "value": 0.5})]
     assert isinstance(await replay(uses_markers, Context(WF, history), None), NonDeterministic)
+
+
+async def checks_for_rollover(ctx, input):
+    for i in range(3):
+        await ctx.activity("a", [i])
+        if ctx.should_continue_as_new():
+            ctx.continue_as_new({"from": i})
+    return "done"
+
+
+def two_activities_done():
+    return [Event(2, "ActivityScheduled", {"name": "a", "args": [0]}),
+            Event(3, "ActivityCompleted", {"scheduled_seq": 2, "result": None})]
+
+
+async def test_should_continue_as_new_is_false_below_the_limit():
+    outcome = await replay(checks_for_rollover, Context(WF, two_activities_done(), max_history=100), None)
+    assert [c.type for c in outcome.commands] == ["ActivityScheduled"]  # kept going to activity 1
+
+
+async def test_reaching_the_limit_records_a_marker_and_continues_as_new():
+    outcome = await replay(checks_for_rollover, Context(WF, two_activities_done(), max_history=2), None)
+    assert isinstance(outcome, ContinuedAsNew)
+    assert outcome.input == {"from": 0}
+    assert [c.payload["kind"] for c in outcome.commands] == ["continue_as_new_suggested"]
+
+
+async def test_replay_answers_as_the_original_run_did():
+    # Originally under the limit at i=0 (no marker), and history is longer now: still False there.
+    history = two_activities_done() + [Event(4, "ActivityScheduled", {"name": "a", "args": [1]})]
+    assert await replay(checks_for_rollover, Context(WF, history, max_history=2), None) == Suspended([])
+
+
+async def test_untaken_signals_are_carried_to_the_next_run():
+    async def take_one_then_roll(ctx, input):
+        await ctx.wait_signal("m")
+        ctx.continue_as_new(None)
+
+    history = [signal(2, "m", 1), signal(3, "other", "x"), signal(4, "m", 2)]
+    outcome = await replay(take_one_then_roll, Context(WF, history), None)
+    assert outcome.signals == [{"name": "other", "payload": "x"}, {"name": "m", "payload": 2}]

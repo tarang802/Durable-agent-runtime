@@ -16,7 +16,9 @@ import asyncpg
 
 from durably import activity_context, registry, retry, store
 from durably.activity_context import ActivityInfo
-from durably.context import Completed, Context, Failed, NonDeterministic, Suspended, replay
+from durably.context import (
+    DEFAULT_MAX_HISTORY, Completed, Context, ContinuedAsNew, Failed, NonDeterministic, Suspended, replay,
+)
 from durably.db import create_pool
 from durably.errors import StaleWorkerError
 from durably.failpoints import failpoint
@@ -61,6 +63,10 @@ class _Worker:
 class WorkflowWorker(_Worker):
     kind = "workflow"
 
+    def __init__(self, pool: asyncpg.Pool, *, max_history: int = DEFAULT_MAX_HISTORY, **kwargs):
+        super().__init__(pool, **kwargs)
+        self.max_history = max_history
+
     async def run_once(self) -> bool:
         # Workflow workers also act as the timer poller.
         async with self.pool.acquire() as conn:
@@ -81,12 +87,12 @@ class WorkflowWorker(_Worker):
             elif fn is None:
                 outcome = NonDeterministic(f"workflow type {wf['type']!r} is not registered in this worker")
             else:
-                outcome = await replay(fn, Context(claim.workflow_id, history), wf["input"])
+                outcome = await replay(fn, Context(claim.workflow_id, history, self.max_history), wf["input"])
 
             failpoint("before_append")
             try:
                 async with conn.transaction():
-                    await self._apply(conn, claim, outcome)
+                    await self._apply(conn, claim, outcome, wf["type"])
             except StaleWorkerError as e:
                 # Another worker took over after our lease expired. Our whole transaction
                 # rolled back, so history is untouched; just walk away.
@@ -95,7 +101,7 @@ class WorkflowWorker(_Worker):
             failpoint("after_record_before_ack")
         return True
 
-    async def _apply(self, conn, claim, outcome) -> None:
+    async def _apply(self, conn, claim, outcome, wf_type: str) -> None:
         wf_id, epoch = claim.workflow_id, claim.epoch
         await store.take_own_task(conn, claim, self.id)  # first: tasks before workflows
         for cmd in getattr(outcome, "commands", []):
@@ -114,6 +120,19 @@ class WorkflowWorker(_Worker):
             case Completed(result=result):
                 await store.append(conn, wf_id, epoch, "WorkflowCompleted", {"result": result})
                 await conn.execute("UPDATE workflows SET status = 'completed', result = $2 WHERE id = $1", wf_id, result)
+            case ContinuedAsNew(input=new_input, signals=signals, seen_through=seen_through):
+                await store.append(conn, wf_id, epoch, "WorkflowContinuedAsNew", {"input": new_input})
+                # The append holds this run's row lock, so no signal can land after this
+                # query; ones that landed after our replay loaded history are carried too.
+                late = await conn.fetch(
+                    "SELECT payload FROM events WHERE workflow_id = $1 AND seq > $2 AND type = 'SignalReceived' ORDER BY seq",
+                    wf_id, seen_through,
+                )
+                carried = [("SignalReceived", s) for s in signals + [r["payload"] for r in late]]
+                new_run = await store.create_workflow(conn, wf_type, new_input, started={"continued_from": str(wf_id)},
+                                                      carried=carried)
+                await conn.execute("UPDATE workflows SET status = 'continued_as_new', continued_as = $2 WHERE id = $1",
+                                   wf_id, new_run)
             case Failed(error=error):
                 await store.append(conn, wf_id, epoch, "WorkflowFailed", {"error": error})
                 await conn.execute("UPDATE workflows SET status = 'failed', error = $2 WHERE id = $1", wf_id, error)
@@ -183,13 +202,16 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--database-url", default=None, help="defaults to $DATABASE_URL")
     parser.add_argument("--lease", type=float, default=30.0, help="lease length in seconds")
     parser.add_argument("--poll", type=float, default=0.2, help="idle poll interval in seconds")
+    parser.add_argument("--max-history", type=int, default=DEFAULT_MAX_HISTORY,
+                        help="history length at which ctx.should_continue_as_new() turns True (workflow workers)")
 
 
 async def serve(args: argparse.Namespace) -> None:
     for module in args.module:
         importlib.import_module(module)
     pool = await create_pool(args.database_url)
-    worker = WORKERS[args.kind](pool, lease=args.lease, poll=args.poll)
+    extra = {"max_history": args.max_history} if args.kind == "workflow" else {}
+    worker = WORKERS[args.kind](pool, lease=args.lease, poll=args.poll, **extra)
     log.info("%s: started", worker.id)
     try:
         await worker.run()

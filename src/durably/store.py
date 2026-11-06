@@ -116,6 +116,49 @@ async def claim_activity_task(conn: asyncpg.Connection, worker_id: str, lease_s:
     return Claim(row["id"], row["workflow_id"], row["attempt"], row["payload"])
 
 
+async def create_workflow(
+    conn: asyncpg.Connection, type: str, input, *, idempotency_key: str | None = None,
+    started: dict | None = None, carried: list[tuple[str, dict]] = (),
+) -> UUID | None:
+    """Insert a workflow with its WorkflowStarted event, then any `carried` events, and wake it.
+
+    Returns None if `idempotency_key` is already taken. The row is brand new, so its first
+    seqs need no fencing, and no other transaction can hold its task or row locks.
+    """
+    wf_id = await conn.fetchval(
+        """
+        INSERT INTO workflows (type, input, idempotency_key, next_seq) VALUES ($1, $2, $3, $4)
+        ON CONFLICT (idempotency_key) DO NOTHING RETURNING id
+        """,
+        type, input, idempotency_key, 2 + len(carried),
+    )
+    if wf_id is None:
+        return None
+    events = [("WorkflowStarted", {"input": input, **(started or {})}), *carried]
+    await conn.executemany(
+        "INSERT INTO events (workflow_id, seq, type, payload) VALUES ($1, $2, $3, $4)",
+        [(wf_id, seq, t, p) for seq, (t, p) in enumerate(events, start=1)],
+    )
+    await wake_workflow(conn, wf_id)
+    return wf_id
+
+
+async def latest_run(conn: asyncpg.Connection, workflow_id) -> asyncpg.Record | None:
+    """Follow the Continue-As-New chain from `workflow_id` to its latest run."""
+    return await conn.fetchrow(
+        """
+        WITH RECURSIVE chain AS (
+            SELECT id, status, result, error, continued_as, 0 AS depth FROM workflows WHERE id = $1
+            UNION ALL
+            SELECT w.id, w.status, w.result, w.error, w.continued_as, c.depth + 1
+            FROM workflows w JOIN chain c ON w.id = c.continued_as
+        )
+        SELECT id, status, result, error FROM chain ORDER BY depth DESC LIMIT 1
+        """,
+        workflow_id,
+    )
+
+
 async def load_history(conn: asyncpg.Connection, workflow_id: UUID) -> list[Event]:
     rows = await conn.fetch(
         "SELECT seq, type, payload FROM events WHERE workflow_id = $1 ORDER BY seq", workflow_id

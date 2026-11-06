@@ -31,6 +31,10 @@ or the database schema; such changes and their migration steps are listed here.
   raises `WorkflowNotRunningError`.
 - `ctx.now()`, `ctx.random()` and `ctx.uuid4()`: values are recorded as markers the first
   time, so every replay sees the same value.
+- Continue-As-New: `ctx.should_continue_as_new()` turns True once a run's history reaches
+  `--max-history` events (default 1000); `ctx.continue_as_new(input)` starts a fresh run,
+  carrying over untaken signals. `client.result` and `client.signal` follow the chain;
+  `client.runs(id)` lists every run.
 
 ### Fixed
 - A deadlock between delivering an event (activity result, timer, signal) and claiming

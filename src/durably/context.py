@@ -19,7 +19,7 @@ import uuid
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, NoReturn
 from uuid import UUID
 
 from durably.errors import ActivityError, NonDeterminismError
@@ -28,6 +28,11 @@ from durably.store import Event
 COMMAND_TYPES = {"ActivityScheduled", "TimerStarted", "MarkerRecorded"}
 # Result event type -> payload field naming the command it answers.
 RESULT_TYPES = {"ActivityCompleted": "scheduled_seq", "ActivityFailed": "scheduled_seq", "TimerFired": "started_seq"}
+
+
+class _ContinueAsNew(BaseException):
+    def __init__(self, input: Any):
+        self.input = input
 
 
 class _Suspend(BaseException):
@@ -48,9 +53,15 @@ def _normalize(value: Any) -> Any:
     return json.loads(json.dumps(value))
 
 
+DEFAULT_MAX_HISTORY = 1000
+
+
 class Context:
-    def __init__(self, workflow_id: UUID, history: list[Event]):
+    def __init__(self, workflow_id: UUID, history: list[Event], max_history: int = DEFAULT_MAX_HISTORY):
         self.workflow_id = workflow_id
+        self.max_history = max_history
+        self._history_length = len(history)
+        self._last_seq = history[-1].seq if history else 0
         self._commands = [e for e in history if e.type in COMMAND_TYPES]
         self._results = {e.payload[field]: e for e in history if (field := RESULT_TYPES.get(e.type))}
         self._signals: dict[str, list[Event]] = defaultdict(list)
@@ -140,6 +151,37 @@ class Context:
         """A random UUID, recorded so every replay sees the same value."""
         return UUID(self._marker("uuid4", lambda: str(uuid.uuid4())))
 
+    def should_continue_as_new(self) -> bool:
+        """True once this run's history has reached `max_history` events.
+
+        Check it at a safe point (for example once per loop iteration) and call
+        `continue_as_new` when it is True, so replay time stays bounded. A True answer is
+        recorded as a marker, so replays answer exactly as the original run did.
+        """
+        nxt = self._commands[self._pos] if self._pos < len(self._commands) else None
+        if nxt is not None:  # replaying: True only where the original run recorded it
+            if nxt.type == "MarkerRecorded" and nxt.payload.get("kind") == "continue_as_new_suggested":
+                self._pos += 1
+                return True
+            return False
+        if self._history_length + len(self.new_commands) < self.max_history:
+            return False
+        self._command("MarkerRecorded", {"kind": "continue_as_new_suggested", "value": True},
+                      identity=("kind",), suspend=False)
+        return True
+
+    def continue_as_new(self, input: Any) -> NoReturn:
+        """End this run and start a fresh one with `input` and an empty history.
+
+        Signals this run received but did not take are carried over to the new run, in
+        order. Clients holding the original id follow the chain automatically.
+        """
+        raise _ContinueAsNew(_normalize(input))
+
+    def _untaken_signals(self) -> list[dict]:
+        untaken = [e for name, events in self._signals.items() for e in events[self._signals_taken[name]:]]
+        return [e.payload for e in sorted(untaken, key=lambda e: e.seq)]
+
     async def wait_signal(self, name: str, timeout: float | None = None) -> Any:
         """Wait for the next signal called `name` and return its payload.
 
@@ -195,16 +237,26 @@ class Suspended:
 
 
 @dataclass
+class ContinuedAsNew:
+    input: Any
+    signals: list[dict]  # untaken signal payloads to carry over, in order
+    seen_through: int  # last seq this replay saw; later signals are carried too
+    commands: list[Command] = field(default_factory=list)
+
+
+@dataclass
 class NonDeterministic:
     error: str
 
 
-async def replay(fn, ctx: Context, input: Any) -> Completed | Failed | Suspended | NonDeterministic:
+async def replay(fn, ctx: Context, input: Any) -> Completed | Failed | Suspended | ContinuedAsNew | NonDeterministic:
     """Run the workflow function against history once and report how it stopped."""
     try:
         result = await fn(ctx, input)
     except _Suspend:
         outcome = Suspended(ctx.new_commands)
+    except _ContinueAsNew as e:
+        outcome = ContinuedAsNew(e.input, ctx._untaken_signals(), ctx._last_seq, ctx.new_commands)
     except Exception as e:
         outcome = Failed(f"{type(e).__name__}: {e}", ctx.new_commands)
     else:

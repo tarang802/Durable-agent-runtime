@@ -5,7 +5,7 @@ CREATE TABLE IF NOT EXISTS workflows (
     type            text        NOT NULL,
     input           jsonb,      -- NULL when started without input
     status          text        NOT NULL DEFAULT 'running'
-                    CHECK (status IN ('running', 'completed', 'failed', 'cancelled')),
+                    CHECK (status IN ('running', 'completed', 'failed', 'cancelled', 'continued_as_new')),
     -- Fencing token: bumped on every workflow-task claim. Every history write is
     -- conditioned on it, so a stale worker's write matches zero rows (G2).
     epoch           bigint      NOT NULL DEFAULT 0,
@@ -17,6 +17,8 @@ CREATE TABLE IF NOT EXISTS workflows (
     idempotency_key text        UNIQUE,
     result          jsonb,
     error           text,
+    -- Continue-As-New: the next run of this workflow. Clients follow the chain.
+    continued_as    uuid REFERENCES workflows (id),
     created_at      timestamptz NOT NULL DEFAULT now()
 );
 
@@ -26,7 +28,8 @@ CREATE TABLE IF NOT EXISTS events (
     type        text        NOT NULL CHECK (type IN (
                     'WorkflowStarted', 'ActivityScheduled', 'ActivityCompleted',
                     'ActivityFailed', 'TimerStarted', 'TimerFired', 'SignalReceived',
-                    'MarkerRecorded', 'WorkflowCompleted', 'WorkflowFailed')),
+                    'MarkerRecorded', 'WorkflowCompleted', 'WorkflowFailed',
+                    'WorkflowContinuedAsNew')),
     payload     jsonb       NOT NULL DEFAULT '{}'::jsonb,
     created_at  timestamptz NOT NULL DEFAULT now(),
     -- G1: one event per position in a workflow's history.
@@ -68,4 +71,4 @@ CREATE UNIQUE INDEX IF NOT EXISTS tasks_one_pending_workflow_task
 
 -- G4: at most one terminal event per workflow, enforced by the database.
 CREATE UNIQUE INDEX IF NOT EXISTS events_one_terminal
-    ON events (workflow_id) WHERE type IN ('WorkflowCompleted', 'WorkflowFailed');
+    ON events (workflow_id) WHERE type IN ('WorkflowCompleted', 'WorkflowFailed', 'WorkflowContinuedAsNew');
